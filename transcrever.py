@@ -323,6 +323,29 @@ if __name__ == "__main__":
                                 logger.info(f"✅ Parte {idx} dublada: {part_dubbed}")
                             else:
                                 logger.warning(f"⚠️ Vídeo dublado da parte {idx} não encontrado")
+                                
+                            # Limpeza agressiva pro-ativa da parte atual (Demucs, vocais, instrumentais, tsxs VAD)
+                            # Economiza GIGABYTES de hd durante vídeos longos de 4h+
+                            try:
+                                demucs_model = config.get("models.demucs.model", "htdemucs")
+                                sep_part_dir = os.path.join(config.get("paths.separated_dir", "separated"), demucs_model, part_stem)
+                                if os.path.isdir(sep_part_dir):
+                                    shutil.rmtree(sep_part_dir, ignore_errors=True)
+                                    logger.info(f"🧹 Limpeza Rápida: Pasta de Vocais e Fundo da parte {idx} limpa.")
+                                
+                                # Limpa arquivos .wav e residuais que começam com o nome da parte
+                                arquivos_residuais = glob.glob(f"*{glob.escape(part_stem)}*.wav")
+                                for aqv in arquivos_residuais:
+                                    try:
+                                        os.remove(aqv)
+                                    except:
+                                        pass
+                                
+                                # Sempre limpar a pasta de TTS geradas p/ nao misturar audio de multi-vozes e não ocupar disco
+                                shutil.rmtree("audios_frases_pt", ignore_errors=True)
+                                shutil.rmtree("audios_frases_pt_stretched", ignore_errors=True)
+                            except Exception as e:
+                                logger.debug(f"Falha não-critica ao limpar temp da parte {idx}: {e}")
                         
                         if len(dubbed_parts) == len(parts):
                             # Concatena todas as partes
