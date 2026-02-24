@@ -1,0 +1,168 @@
+import os
+import pickle
+import torch
+from pathlib import Path
+from typing import Any, Optional
+import whisper
+import sys
+
+# Adiciona caminho do TTS se necessário
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TTS"))
+try:
+    from TTS.api import TTS
+except ImportError:
+    TTS = None
+
+from logger import setup_logger
+from config_loader import config
+from utils import ensure_dir
+
+logger = setup_logger("model_cache")
+
+class ModelCache:
+    """
+    Gerencia o cache de modelos de IA (Whisper, TTS) para evitar recarregamento
+    desnecessário e acelerar a inicialização.
+    """
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ModelCache, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+            
+        self.cache_dir = Path(config.get("paths.cache_dir", "cache"))
+        ensure_dir(self.cache_dir)
+        self._memory_cache = {}
+        self._initialized = True
+        
+        # Detecta dispositivo disponível
+        self.device = self._detect_device()
+        logger.info(f"🖥️ Dispositivo detectado: {self.device}")
+        
+        if self.device == "cuda":
+            gpu_name = torch.cuda.get_device_name(0)
+            vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            logger.info(f"🎮 GPU: {gpu_name} ({vram_total:.1f} GB VRAM)")
+    
+    def _detect_device(self):
+        """Detecta o melhor dispositivo disponível"""
+        device_config = config.get("models.whisper.device", "auto")
+        
+        if device_config != "auto":
+            return device_config
+        
+        if torch.cuda.is_available():
+            return "cuda"
+        else:
+            logger.warning("⚠️ CUDA não disponível. Usando CPU (será mais lento)")
+            return "cpu"
+        
+    def get_whisper(self, model_size: str = "medium", use_fp16: bool = None) -> Any:
+        """
+        Carrega ou retorna modelo Whisper do cache.
+        AGORA COM SUPORTE A GPU E FP16! 🚀
+        
+        Args:
+            model_size: Tamanho do modelo (tiny, base, small, medium, large)
+            use_fp16: Se True, usa FP16 (half precision) na GPU para economizar VRAM
+                     Se None, usa configuração de config.yaml
+        
+        NOTA: FP16 no Whisper funciona via torch.autocast, não .half() direto
+        """
+        # Verifica configuração FP16
+        if use_fp16 is None:
+            use_fp16 = config.get("models.whisper.use_fp16", False)  # Desabilitado por padrão
+        
+        # Chave de cache NÃO inclui FP16 (modelo é sempre FP32, FP16 vem via autocast)
+        cache_key = f"whisper_{model_size}_{self.device}"
+        
+        # 1. Tenta memória RAM
+        if cache_key in self._memory_cache:
+            logger.debug(f"Modelo Whisper ({model_size}) carregado do cache.")
+            return self._memory_cache[cache_key]
+            
+        # 2. Carrega novo COM GPU
+        logger.info(f"Carregando modelo Whisper ({model_size}) no {self.device.upper()}...")
+        
+        # Whisper sempre carrega em FP32, FP16 será usado via autocast durante inferência
+        if use_fp16 and self.device == "cuda":
+            logger.info(f"⚡ FP16 será usado via autocast durante transcrição")
+            logger.info(f"   💾 Economia de VRAM: ~20-30% (via mixed precision)")
+            logger.info(f"   ⚡ Velocidade: +15-20% esperado")
+        
+        try:
+            # Carrega no dispositivo correto (sempre em FP32)
+            model = whisper.load_model(model_size, device=self.device)
+            
+            if self.device == "cuda":
+                logger.info(f"✅ Whisper carregado na GPU (FP32 + autocast FP16)")
+            else:
+                logger.info(f"✅ Whisper carregado na CPU")
+            
+            # Salva flag de FP16 no modelo para uso posterior
+            model._use_fp16 = use_fp16 and self.device == "cuda"
+            
+            self._memory_cache[cache_key] = model
+            return model
+            
+        except Exception as e:
+            logger.error(f"Erro ao carregar Whisper: {e}")
+            # Fallback para CPU se GPU falhar
+            if self.device == "cuda":
+                logger.warning("⚠️ Tentando carregar Whisper na CPU como fallback...")
+                model = whisper.load_model(model_size, device="cpu")
+                model._use_fp16 = False
+                self._memory_cache[f"whisper_{model_size}_cpu"] = model
+                return model
+            raise
+
+    def get_tts(self, model_name: str, device: str = "auto") -> Any:
+        """
+        Carrega ou retorna modelo TTS.
+        Nota: TTS models são complexos de serializar com pickle, 
+        então focamos em cache em memória para a sessão atual.
+        """
+        if TTS is None:
+            raise RuntimeError("Biblioteca TTS não instalada.")
+            
+        cache_key = f"tts_{model_name}_{device}"
+        
+        if cache_key in self._memory_cache:
+            logger.debug(f"Modelo TTS ({model_name}) carregado da memória.")
+            return self._memory_cache[cache_key]
+            
+        logger.info(f"Carregando modelo TTS ({model_name})...")
+        
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+        try:
+            tts = TTS(model_name=model_name, progress_bar=False)
+            tts.to(device)
+            
+            if device == "cuda":
+                logger.info(f"✅ TTS carregado na GPU")
+            else:
+                logger.info(f"✅ TTS carregado na CPU")
+            
+            self._memory_cache[cache_key] = tts
+            return tts
+        except Exception as e:
+            logger.error(f"Erro ao carregar TTS: {e}")
+            raise
+
+    def clear_memory(self):
+        """Limpa cache da memória RAM e VRAM."""
+        self._memory_cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Cache de modelos limpo.")
+
+# Instância global
+model_cache = ModelCache()

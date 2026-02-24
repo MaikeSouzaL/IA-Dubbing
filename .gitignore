@@ -1,0 +1,62 @@
+# Ambientes Virtuais
+venv/
+env/
+ENV/
+.env
+
+# Arquivos compilados do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos gerados pelo sistema e logs
+logs/
+*.log
+
+# Caches e arquivos temporários da IA
+cache/
+model_cache/
+TTS/
+*.pt
+*.pth
+*.bin
+
+# Pastas de saída e arquivos gerados pelo processo
+separated/
+audios_frases_pt/
+audios_frases_pt_stretched/
+VIDOS/
+*_dublado.mp4
+*_part_*.mp4
+
+# Arquivos JSON gerados localmente
+transcricao.json
+transcricao_pt.json
+frases_pt.json
+
+# Textos originais e listas
+video_original.txt
+concat_temp.txt
+passo_de_execução.txt
+
+# Arquivos de vídeo e áudio temporários na raiz
+*.mp4
+*.mkv
+*.avi
+*.webm
+*.wav
+*.mp3
+
+# Arquivos do SO
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDEs e Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Configurações locais (caso haja alguma que não deva ir para o repo)
+# config.yaml (se você quiser manter o config.yaml no repo, mas com valores padrão, deixe isso comentado)

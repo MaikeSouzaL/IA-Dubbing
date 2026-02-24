@@ -1,0 +1,217 @@
+from pydub import AudioSegment
+import os
+import json
+import subprocess
+import re
+import sys
+
+def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration, min_rate=1.0, max_rate=2.0):
+    # Calcula rate ideal
+    rate = src_duration / max(target_duration, 0.01)
+    if rate > max_rate:
+        print(f"⚠️ Rate {rate:.2f}x alto demais, cortando áudio.")
+        # Apenas corta o áudio para caber
+        seg = AudioSegment.from_wav(input_file)
+        seg = seg[:int(target_duration * 1000)]
+        seg.export(output_file, format="wav")
+        return
+    elif rate < min_rate:
+        print(f"⚠️ Rate {rate:.2f}x baixo demais, adicionando silêncio ao final.")
+        seg = AudioSegment.from_wav(input_file)
+        silence = AudioSegment.silent(duration=int((target_duration - src_duration) * 1000))
+        seg = seg + silence
+        seg.export(output_file, format="wav")
+        return
+    # Stretch normal via ffmpeg
+    # (faz em múltiplas passadas se necessário)
+    rates = []
+    while rate > 2.0:
+        rates.append(2.0)
+        rate /= 2.0
+    while rate < 0.5:
+        rates.append(0.5)
+        rate /= 0.5
+    rates.append(rate)
+    filter_str = ",".join([f"atempo={r:.5f}" for r in rates])
+    cmd = f'ffmpeg -y -i "{input_file}" -filter:a "{filter_str}" "{output_file}"'
+    os.system(cmd)
+
+
+def get_video_duration(video_path):
+    result = subprocess.run(['ffmpeg', '-i', video_path], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    output = result.stderr.decode()
+    matches = re.search(r'Duration: (\d+):(\d+):(\d+\.\d+)', output)
+    if matches:
+        h, m, s = matches.groups()
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    return None
+
+def detectar_onset_offset_audio(audio_seg, threshold_db=-38):
+    chunk_size = 15  # ms
+    chunks = [audio_seg[i:i+chunk_size] for i in range(0, len(audio_seg), chunk_size)]
+    inicio_real, fim_real = 0, len(audio_seg)
+    for i, chunk in enumerate(chunks):
+        if chunk.dBFS > threshold_db:
+            inicio_real = i * chunk_size
+            break
+    for i in range(len(chunks)-1, -1, -1):
+        if chunks[i].dBFS > threshold_db:
+            fim_real = (i+1) * chunk_size
+            break
+    return inicio_real, min(fim_real, len(audio_seg))
+
+# === CONFIGURAÇÕES ===
+tts_dir = "audios_frases_pt"
+stretched_dir = "audios_frases_pt_stretched"
+os.makedirs(stretched_dir, exist_ok=True)
+
+# Lê o nome do vídeo original do arquivo
+with open("video_original.txt", "r", encoding="utf-8") as f:
+    video_filename = f.read().strip()
+video_stem = os.path.splitext(os.path.basename(video_filename))[0]  # << fix
+
+# 1. Carrega as frases e tempos
+with open("frases_pt.json", "r", encoding="utf-8") as f:
+    frases = json.load(f)
+
+# 2. Refina cada frase e garante áudio exato ao tempo do slot
+# Modificação da função que processa cada frase para melhor sincronização
+def refinar_e_ajustar_frase(frase, i, adiantar_ms=120, folga_ms=30):
+    """
+    Refina o áudio da frase com tempos precisos:
+    - Começa alguns milissegundos antes
+    - Termina com folga para não ultrapassar o tempo
+    - Ajusta a velocidade para caber perfeitamente no slot
+    """
+    audio_in = os.path.join(tts_dir, f"frase_{i:03d}.wav")
+    audio_out = os.path.join(stretched_dir, f"frase_{i:03d}.wav")
+    
+    if not os.path.exists(audio_in):
+        print(f"Arquivo não encontrado: {audio_in}")
+        return None
+    
+    # Carrega o áudio
+    seg = AudioSegment.from_wav(audio_in)
+    
+    # Detecta início/fim real da fala (remove silêncio)
+    inicio_ms, fim_ms = detectar_onset_offset_audio(seg, threshold_db=-38)
+    seg_ref = seg[inicio_ms:fim_ms]
+    
+    if len(seg_ref) < 80 or seg_ref.dBFS < -45:
+        print(f"🔇 Ignorando frase {i} sem fala detectável.")
+        return None
+    
+    # Adiciona fade suave nas pontas
+    seg_ref = seg_ref.fade_in(15).fade_out(18)
+    
+    # Tempo disponível para a frase (ligeiramente menor que o intervalo total)
+    # Adiantamos o início e deixamos folga no final
+    target_start = frase["start"] - adiantar_ms/1000.0  # Começamos X ms antes
+    target_end = frase["end"] - folga_ms/1000.0  # Terminamos Y ms antes do fim
+    target_duration = target_end - target_start
+    
+    # Arquivo temporário para stretching
+    temp_file = f"temp_stretch_{i}.wav"
+    seg_ref.export(temp_file, format="wav")
+    
+    # Duração original do áudio sem silêncio
+    src_duration = len(seg_ref) / 1000.0
+    
+    # Aplicamos o stretching para encaixar exatamente no tempo disponível
+    stretch_audio_ffmpeg(temp_file, audio_out, src_duration, target_duration)
+    
+    os.remove(temp_file)
+    return {
+        **frase, 
+        "audio_path": audio_out, 
+        "real_start": target_start,
+        "real_end": target_end
+    }
+
+frases_refinadas = []
+for i, frase in enumerate(frases):
+    frase_refinada = refinar_e_ajustar_frase(frase, i, adiantar_ms=80, folga_ms=50)
+    if frase_refinada:
+        frases_refinadas.append(frase_refinada)
+        print(f"✅ {frase_refinada['audio_path']} ajustado de {frase['start']:.2f}-{frase['end']:.2f} para {frase_refinada['real_start']:.2f}-{frase_refinada['real_end']:.2f}")
+
+# 3. Montagem final: cada frase em seu slot exato, com silêncio entre, sem sobreposição
+final_voice = AudioSegment.silent(duration=0)
+video_dur = get_video_duration(video_filename)
+for i, frase in enumerate(frases_refinadas):
+    start_ms = int(frase["real_start"] * 1000)
+    
+    # Garante que não volta no tempo
+    if len(final_voice) < start_ms:
+        final_voice += AudioSegment.silent(duration=start_ms - len(final_voice))
+        
+    seg = AudioSegment.from_wav(frase["audio_path"])
+    final_voice += seg
+if video_dur is not None and len(final_voice) < int(video_dur * 1000):
+    final_voice += AudioSegment.silent(duration=int(video_dur * 1000) - len(final_voice))
+
+final_voice.export("voz_dublada.wav", format="wav")
+print("✅ voz_dublada.wav criada com encaixe perfeito de slots!")
+
+# 4. Juntar com o som de fundo (accompaniment)
+bg = None
+bg_dir = os.path.join("separated", "htdemucs", video_stem)
+
+def carregar_fundo(bg_dir):
+    stems = []
+    for name in ["other.wav", "drums.wav", "bass.wav"]:
+        path = os.path.join(bg_dir, name)
+        if os.path.isfile(path):
+            try:
+                stems.append(AudioSegment.from_wav(path))
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar {name}: {e}")
+    if not stems:
+        return None
+    bg_mix = stems[0]
+    for s in stems[1:]:
+        bg_mix = bg_mix.overlay(s)
+    return bg_mix
+
+bg = carregar_fundo(bg_dir)
+
+if bg is not None:
+    # Ajuste de volumes para inteligibilidade
+    final_voice_adj = final_voice + 3  # aumenta voz
+    bg_adj = bg - 8                    # reduz fundo
+
+    if len(bg_adj) < len(final_voice_adj):
+        bg_adj = bg_adj + AudioSegment.silent(duration=(len(final_voice_adj) - len(bg_adj)))
+    else:
+        bg_adj = bg_adj[:len(final_voice_adj)]
+
+    mix = bg_adj.overlay(final_voice_adj)
+    mix.export("audio_final_mix.wav", format="wav")
+    print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
+else:
+    print("⚠️ Som de fundo não encontrado nas pastas do Demucs.")
+
+# 5. Juntar áudio final com o vídeo original usando ffmpeg
+video_dublado = None  # << evita NameError
+if os.path.isfile("audio_final_mix.wav"):
+    video_dublado = f"{video_stem}_dublado.mp4"
+    cmd_ffmpeg = f'ffmpeg -y -i "{video_filename}" -i audio_final_mix.wav -c:v copy -map 0:v:0 -map 1:a:0 -shortest "{video_dublado}"'
+    print("\nGerando vídeo dublado automaticamente...")
+    os.system(cmd_ffmpeg)
+    print(f"\nProcesso finalizado! Arquivo gerado: {video_dublado}")
+else:
+    print("⚠️ Não foi possível gerar o vídeo dublado pois o áudio final não foi encontrado.")
+
+print("🚀 Pipeline completo!")
+
+# Chama automaticamente o script de limpeza
+print("🧹 Limpando arquivos temporários e intermediários...")
+ROOT = os.path.dirname(os.path.abspath(__file__))
+subprocess.run([sys.executable, "limpar_projeto.py"], check=False, cwd=ROOT)
+
+if video_dublado and os.path.isfile(video_dublado) and os.path.getsize(video_dublado) > 0:
+    subprocess.run([sys.executable, "limpar_projeto.py", video_dublado], check=False, cwd=ROOT)
+
+print("🔄 Iniciando sincronização e junção das frases...")
+ROOT = os.path.dirname(os.path.abspath(__file__))
+subprocess.run([sys.executable, "sincronizar_e_juntar.py"], check=True, cwd=ROOT)
