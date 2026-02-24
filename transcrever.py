@@ -188,17 +188,49 @@ if __name__ == "__main__":
             import yt_dlp
         except ImportError:
             logger.info("Instalando yt-dlp...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "yt-dlp"], check=False, encoding='utf-8', errors='replace')
+            subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], check=False, encoding='utf-8', errors='replace')
             import yt_dlp
+            
+        def yt_dlp_monitor(d):
+            if d['status'] == 'downloading':
+                try:
+                    percent_str = d.get('_percent_str', '0.0%').replace('%', '').strip()
+                    # Remove ANSI colors
+                    import re
+                    percent_str = re.sub(r'\x1b\[[0-9;]*m', '', percent_str)
+                    percent = float(percent_str)
+                    # Envia para a interface pegar via log
+                    print(f"DOWNLOAD_PROGRESS: {percent}") 
+                except:
+                    pass
+
         ydl_opts = {
             'format': 'bestvideo+bestaudio/best',
             'outtmpl': '%(title)s.%(ext)s',
-            'merge_output_format': 'mp4'
+            'merge_output_format': 'mp4',
+            'progress_hooks': [yt_dlp_monitor],
+            'noprogress': True # Esconde a barrinha poluidora do terminal do yt-dlp
         }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            f = ydl.prepare_filename(info)
-        logger.info(f"✅ Vídeo salvo como: {f}")
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                f = ydl.prepare_filename(info)
+            logger.info(f"✅ Vídeo salvo como: {f}")
+        except Exception as e:
+            if "403" in str(e) or "Forbidden" in str(e):
+                logger.warning("⚠️ Erro 403 Forbidden retornado pelo YouTube. O yt-dlp pode estar desatualizado.")
+                logger.info("🔄 Tentando atualizar o yt-dlp automaticamente...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], check=False)
+                logger.info("⏬ Tentando baixar novamente...")
+                import importlib
+                importlib.reload(yt_dlp)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    f = ydl.prepare_filename(info)
+                logger.info(f"✅ Vídeo salvo como: {f}")
+            else:
+                raise e
     elif escolha == "2":
         try:
             f = sys.stdin.readline().strip()
@@ -210,6 +242,15 @@ if __name__ == "__main__":
     if not os.path.isfile(f):
         logger.error(f"Arquivo não encontrado: {f}")
         sys.exit(1)
+        
+    if os.environ.get("TRANSCRIBER_PREVIEW") == "1":
+        logger.info("🧪 MODO AMOSTRA ATIVADO: Recortando os primeiros 15 segundos do vídeo...")
+        preview_f = f"{os.path.splitext(f)[0]}_preview{os.path.splitext(f)[1]}"
+        # Corta os primeiros 15s sem reencodar (rápido!)
+        cmd_preview = ["ffmpeg", "-y", "-i", f, "-t", "15", "-c", "copy", preview_f]
+        subprocess.run(cmd_preview, capture_output=True)
+        f = preview_f
+        logger.info(f"✅ Amostra extraída com sucesso!")
     
     # Verifica se o vídeo é muito grande e precisa ser dividido automaticamente
     # MAS apenas se não for uma parte de um vídeo maior (evita divisão recursiva)

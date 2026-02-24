@@ -1,0 +1,13 @@
+translation:
+  target_language: pt
+models:
+  whisper:
+    size: medium
+app:
+  generate_subtitles: false
+  subtitle_original: false
+  subtitle_translated: false
+  clean_after_completion: true
+  keep_cut_videos: false
+  use_multi_voice: false
+  expected_speakers: 2

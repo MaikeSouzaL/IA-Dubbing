@@ -144,6 +144,23 @@ class DubbingApp:
         ctk.CTkLabel(grid_frame, text="Vídeos Longos:").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=10)
         ctk.CTkCheckBox(grid_frame, text="Manter vídeos cortados salvos", variable=self.keep_cut_videos).grid(row=2, column=1, columnspan=3, sticky="w", pady=10)
         
+        # Linha 4 - Avançado (Múltiplas Vozes)
+        ctk.CTkLabel(grid_frame, text="Avançado:").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=10)
+        
+        adv_frame = ctk.CTkFrame(grid_frame, fg_color="transparent")
+        adv_frame.grid(row=3, column=1, columnspan=4, sticky="w")
+        
+        self.use_multi_voice = ctk.BooleanVar(value=config.get("app.use_multi_voice", False))
+        self.chk_multi_voice = ctk.CTkCheckBox(adv_frame, text="Modo Entrevista (Múltiplas Vozes)", variable=self.use_multi_voice, command=self.toggle_multi_voice)
+        self.chk_multi_voice.pack(side="left", padx=(0, 15))
+        
+        ctk.CTkLabel(adv_frame, text="Qtd Locutores:").pack(side="left", padx=(5, 5))
+        self.expected_speakers = ctk.StringVar(value=str(config.get("app.expected_speakers", 2)))
+        self.entry_speakers = ctk.CTkEntry(adv_frame, textvariable=self.expected_speakers, width=40)
+        self.entry_speakers.pack(side="left")
+        
+        self.toggle_multi_voice()
+        
         # Juntar Vídeos
         merge_frame = ctk.CTkFrame(self.main_frame)
         merge_frame.pack(fill="x", pady=(0, 20), ipady=10)
@@ -191,11 +208,20 @@ class DubbingApp:
         btn_frame = ctk.CTkFrame(footer_frame, fg_color="transparent")
         btn_frame.pack(side="right")
         
+        self.btn_preview = ctk.CTkButton(btn_frame, text="🧪 Gerar Amostra (15s)", font=ctk.CTkFont(size=14, weight="bold"), fg_color="#f0ad4e", hover_color="#ec971f", height=40, command=self.start_preview)
+        self.btn_preview.pack(side="left", padx=5)
+
         self.btn_start = ctk.CTkButton(btn_frame, text="▶️ Iniciar Dublagem", font=ctk.CTkFont(size=14, weight="bold"), height=40, command=self.start_process)
         self.btn_start.pack(side="left", padx=5)
         
         self.btn_stop = ctk.CTkButton(btn_frame, text="⏹️ Parar", font=ctk.CTkFont(size=14, weight="bold"), fg_color="#d9534f", hover_color="#c9302c", height=40, state="disabled", command=self.stop_process)
         self.btn_stop.pack(side="left", padx=5)
+
+    def toggle_multi_voice(self):
+        if self.use_multi_voice.get():
+            self.entry_speakers.configure(state="normal")
+        else:
+            self.entry_speakers.configure(state="disabled")
 
     def toggle_input_mode(self):
         mode = self.input_mode.get()
@@ -272,6 +298,17 @@ class DubbingApp:
         while not self.log_queue.empty():
             msg, level = self.log_queue.get()
             
+            dl_match = re.search(r"DOWNLOAD_PROGRESS:\s*(\d+\.?\d*)", msg)
+            if dl_match:
+                try:
+                    percent = float(dl_match.group(1))
+                    self.stage_var.set(f"📥 Baixando do YouTube: {percent:.1f}%")
+                    # A barra de baixo vai andar de 0% até 5% (0.0 até 0.05)
+                    self.progress_var.set((percent * 0.05) / 100.0)
+                    continue
+                except ValueError:
+                    pass
+
             progress_match = re.search(r"PROGRESS:\s*(\d+\.?\d*)", msg)
             if progress_match:
                 try:
@@ -323,7 +360,10 @@ class DubbingApp:
             
         self.root.after(100, self.process_log_queue)
 
-    def start_process(self):
+    def start_preview(self):
+        self.start_process(is_preview=True)
+
+    def start_process(self, is_preview=False):
         if self.is_running:
             return
             
@@ -340,6 +380,12 @@ class DubbingApp:
                 messagebox.showerror("Erro", "Insira uma URL do YouTube.")
                 return
 
+        # Assegura que as chaves existam mesmo se config.yaml não existir
+        if "translation" not in config._config: config._config["translation"] = {}
+        if "models" not in config._config: config._config["models"] = {}
+        if "whisper" not in config._config["models"]: config._config["models"]["whisper"] = {}
+        if "app" not in config._config: config._config["app"] = {}
+
         config._config["translation"]["target_language"] = self.target_lang.get()
         config._config["models"]["whisper"]["size"] = self.whisper_model.get()
         config._config["app"]["generate_subtitles"] = self.generate_subtitles.get()
@@ -347,12 +393,18 @@ class DubbingApp:
         config._config["app"]["subtitle_translated"] = self.subtitle_translated.get()
         config._config["app"]["clean_after_completion"] = self.clean_after.get()
         config._config["app"]["keep_cut_videos"] = self.keep_cut_videos.get()
+        config._config["app"]["use_multi_voice"] = self.use_multi_voice.get()
+        try:
+            config._config["app"]["expected_speakers"] = int(self.expected_speakers.get())
+        except:
+            config._config["app"]["expected_speakers"] = 2
         
         config.save()
         self.log(f"🌍 Idioma de destino: {self.target_lang.get()}", "INFO")
 
         self.is_running = True
         self.btn_start.configure(state="disabled")
+        self.btn_preview.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         
         self.progress_bar_widget.set(0)
@@ -361,9 +413,12 @@ class DubbingApp:
         self.log_textbox.configure(state='normal')
         self.log_textbox.delete(1.0, "end")
         self.log_textbox.configure(state='disabled')
-        self.stage_var.set("Iniciando...")
+        if is_preview:
+            self.stage_var.set("Iniciando Amostra (15s)...")
+        else:
+            self.stage_var.set("Iniciando...")
         
-        thread = threading.Thread(target=self.run_pipeline, args=(mode, target))
+        thread = threading.Thread(target=self.run_pipeline, args=(mode, target, is_preview))
         thread.daemon = True
         thread.start()
 
@@ -375,9 +430,12 @@ class DubbingApp:
             self.log("🛑 Parando processo...", "WARNING")
             self.is_running = False 
 
-    def run_pipeline(self, mode, target):
+    def run_pipeline(self, mode, target, is_preview=False):
         try:
-            self.log("🚀 Iniciando pipeline de dublagem...", "SUCCESS")
+            if is_preview:
+                self.log("🧪 Iniciando pipeline em MODO AMOSTRA (15 segundos)...", "SUCCESS")
+            else:
+                self.log("🚀 Iniciando pipeline de dublagem completo...", "SUCCESS")
             
             input_str = f"1\n{target}\n" if mode == "url" else f"2\n{target}\n"
             
@@ -387,7 +445,9 @@ class DubbingApp:
             
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
-            
+            if is_preview:
+                env["TRANSCRIBER_PREVIEW"] = "1"
+
             process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -436,6 +496,7 @@ class DubbingApp:
 
     def _reset_buttons(self):
         self.btn_start.configure(state="normal")
+        self.btn_preview.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.status_var.set("Pronto")
         self.stage_var.set("Aguardando início...")

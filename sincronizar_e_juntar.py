@@ -264,6 +264,21 @@ if bg is not None:
     else:
         bg_adj = bg_adj[:len(final_voice_adj)]
 
+    print("🎧 Aplicando Auto-Ducking (diminuindo música durante as falas)...")
+    # Aplica redução de 10dB onde há voz
+    try:
+        if frases_refinadas:
+            for f_ref in frases_refinadas:
+                s_ms = int(f_ref["real_start"] * 1000)
+                e_ms = int(f_ref["real_end"] * 1000)
+                if e_ms <= len(bg_adj):
+                    # Reduz volume do bg durante o trecho (-10dB)
+                    trecho_reduzido = bg_adj[s_ms:e_ms] - 10
+                    # Reconstrói
+                    bg_adj = bg_adj[:s_ms] + trecho_reduzido + bg_adj[e_ms:]
+    except Exception as e:
+        print(f"⚠️ Erro ao aplicar ducking, prosseguindo com volume original: {e}")
+
     mix = bg_adj.overlay(final_voice_adj)
     mix.export("audio_final_mix.wav", format="wav")
     print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
@@ -280,6 +295,13 @@ if os.path.isfile("audio_final_mix.wav"):
     os.system(cmd_ffmpeg)
     print(f"\nProcesso finalizado! Arquivo gerado: {video_dublado}")
     log_progress(logger, 100.0)
+    
+    # 6. Geração de Legendas (Se solicitado)
+    from config_loader import config
+    if config.get("app.generate_subtitles", True):
+        print("\n📝 Gerando legendas SRT...")
+        subprocess.run([sys.executable, "gerar_legendas.py"], check=False, cwd=ROOT)
+
 else:
     print("⚠️ Não foi possível gerar o vídeo dublado pois o áudio final não foi encontrado.")
 
