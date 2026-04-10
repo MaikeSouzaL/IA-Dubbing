@@ -54,7 +54,6 @@ def limpar():
         config.get("paths.stretched_dir", "audios_frases_pt_stretched"),
         "separated",  # ← IMPORTANTE: Remove stems do Demucs
         "temp",
-        "cache"  # Remove cache também
     ]
     
     for d in dirs_to_remove:
@@ -64,6 +63,24 @@ def limpar():
                 logger.info(f"✅ Diretório removido: {d}")
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao remover diretório {d}: {e}")
+
+    # Cache: remove tudo EXCETO o cache do Coqui TTS (cache/tts_home),
+    # porque ele guarda os modelos e o aceite do CPML (tos_agreed.txt).
+    cache_dir = config.get("paths.cache_dir", "cache")
+    if os.path.isdir(cache_dir):
+        try:
+            for item in os.listdir(cache_dir):
+                # Mantém o cache do TTS para evitar re-download + prompt de termos.
+                if item.lower() == "tts_home":
+                    continue
+                full = os.path.join(cache_dir, item)
+                if os.path.isdir(full):
+                    shutil.rmtree(full, ignore_errors=True)
+                else:
+                    safe_remove(full)
+            logger.info(f"✅ Cache limpo (preservado: {os.path.join(cache_dir, 'tts_home')})")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao limpar cache: {e}")
 
     # 4. Remove TODOS os arquivos WAV na raiz (chunks de voz)
     wav_count = 0

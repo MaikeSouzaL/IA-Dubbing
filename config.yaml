@@ -9,5 +9,5 @@ app:
   subtitle_translated: false
   clean_after_completion: true
   keep_cut_videos: false
-  use_multi_voice: false
+  use_multi_voice: true
   expected_speakers: 2

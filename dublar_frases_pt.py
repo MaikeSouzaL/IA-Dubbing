@@ -344,7 +344,11 @@ def dublar_frases(frases_pt_json, vocals_path, saida_dir, use_multi_voice=False)
                                 if retry == max_retries - 1:
                                     # Última tentativa: recarrega o modelo
                                     logger.info("🔄 Última tentativa - recarregando modelo TTS...")
-                                    model_cache._tts_model = None
+                                    # ModelCache usa cache em memória; limpa e recarrega.
+                                    try:
+                                        model_cache.clear_memory()
+                                    except Exception:
+                                        pass
                                     torch.cuda.empty_cache()
                                     tts = model_cache.get_tts(model_name, device)
                                     logger.info("✅ Modelo TTS recarregado")
@@ -477,4 +481,5 @@ if __name__ == "__main__":
     logger.info("🔄 Sincronizando e juntando...")
     ret = subprocess.run([sys.executable, "sincronizar_e_juntar.py"], encoding='utf-8', errors='replace')
     if ret.returncode != 0:
-        logger.warning(f"⚠️ sincronizar_e_juntar.py retornou código {ret.returncode}")
+        logger.error(f"❌ sincronizar_e_juntar.py retornou código {ret.returncode}")
+        sys.exit(ret.returncode)

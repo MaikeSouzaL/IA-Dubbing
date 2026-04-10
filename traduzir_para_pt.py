@@ -65,4 +65,7 @@ if not data_pt or all(not c.get("transcript_pt") for c in data_pt):
     logger.warning("⚠️ Traduções vazias; verificando conectividade ou quota.")
 else:
     logger.info("🔄 Iniciando extração de frases e tempos...")
-    subprocess.run([sys.executable, "extrair_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
+    ret = subprocess.run([sys.executable, "extrair_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
+    if ret.returncode != 0:
+        logger.error(f"❌ extrair_frases_pt.py falhou (código {ret.returncode}).")
+        sys.exit(ret.returncode)

@@ -520,4 +520,7 @@ if __name__ == "__main__":
     with open("video_original.txt", "w", encoding="utf-8") as f_video:
         f_video.write(f)
     logger.info("🔄 Iniciando tradução automática para português...")
-    subprocess.run([sys.executable, "traduzir_para_pt.py"], check=False, encoding='utf-8', errors='replace')
+    ret = subprocess.run([sys.executable, "traduzir_para_pt.py"], check=False, encoding='utf-8', errors='replace')
+    if ret.returncode != 0:
+        logger.error(f"❌ traduzir_para_pt.py falhou (código {ret.returncode}).")
+        sys.exit(ret.returncode)

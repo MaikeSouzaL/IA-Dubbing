@@ -4,6 +4,7 @@ import json
 import subprocess
 import re
 import sys
+import glob
 from logger import setup_logger, log_progress
 
 logger = setup_logger(__name__)
@@ -223,32 +224,61 @@ bg = None
 bg_dir = os.path.join("separated", "htdemucs", video_stem)
 
 def carregar_fundo(bg_dir):
-    # Tenta carregar stems separados (modelo 4-stems)
+    """
+    Carrega o áudio de fundo (música, aplausos, sons ambiente).
+    Tenta 3 estratégias diferentes de carregamento:
+    1. Stems 4-canais (vocals, bass, drums, other)
+    2. Stems 2-canais (vocals, no_vocals)
+    3. Arquivo direto
+    """
+    
+    if not os.path.isdir(bg_dir):
+        print(f"❌ Diretório não encontrado: {bg_dir}")
+        return None
+    
+    # Listas os arquivos disponíveis
+    files_in_dir = os.listdir(bg_dir)
+    print(f"📂 Arquivos em {bg_dir}: {files_in_dir}")
+    
+    # Estratégia 1: Tenta carregar stems separados (modelo 4-stems)
     stems = []
     for name in ["other.wav", "drums.wav", "bass.wav"]:
         path = os.path.join(bg_dir, name)
         if os.path.isfile(path):
             try:
-                stems.append(AudioSegment.from_wav(path))
+                seg = AudioSegment.from_wav(path)
+                stems.append((name, seg))
+                print(f"   ✅ Carregado {name} ({len(seg)}ms)")
             except Exception as e:
-                print(f"⚠️ Erro ao carregar {name}: {e}")
+                print(f"   ⚠️ Erro ao carregar {name}: {e}")
     
     if stems:
-        bg_mix = stems[0]
-        for s in stems[1:]:
+        bg_mix = stems[0][1]
+        for name, s in stems[1:]:
             bg_mix = bg_mix.overlay(s)
-        print("✅ Usando stems separados (bass + drums + other)")
+        print(f"✅ Fundo preparado com {len(stems)} stems: {', '.join(n[1] for n in [(n, n) for n, _ in stems])}")
         return bg_mix
     
-    # Fallback: usa no_vocals.wav (modelo 2-stems)
+    # Estratégia 2: Fallback para no_vocals.wav (modelo 2-stems)
     no_vocals = os.path.join(bg_dir, "no_vocals.wav")
     if os.path.isfile(no_vocals):
         try:
             bg_mix = AudioSegment.from_wav(no_vocals)
-            print("✅ Usando no_vocals.wav como música de fundo")
+            print(f"✅ Fundo carregado de no_vocals.wav ({len(bg_mix)}ms)")
             return bg_mix
         except Exception as e:
             print(f"⚠️ Erro ao carregar no_vocals.wav: {e}")
+    
+    # Estratégia 3: Procura por qualquer arquivo .wav que não seja vocals
+    for fname in files_in_dir:
+        if fname.endswith(".wav") and "vocal" not in fname.lower():
+            fpath = os.path.join(bg_dir, fname)
+            try:
+                bg_mix = AudioSegment.from_wav(fpath)
+                print(f"✅ Fundo carregado de {fname} ({len(bg_mix)}ms)")
+                return bg_mix
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar {fname}: {e}")
     
     return None
 
@@ -256,35 +286,51 @@ bg = carregar_fundo(bg_dir)
 
 if bg is not None:
     # Ajuste de volumes para inteligibilidade
-    final_voice_adj = final_voice + 3  # aumenta voz
-    bg_adj = bg                        # mantém volume original do fundo
+    final_voice_adj = final_voice + 3  # aumenta voz em +3dB
+    bg_adj = bg - 6                     # reduz som de fundo em -6dB para destacar voz
 
+    # Garante que os dois áudios têm o mesmo tamanho
     if len(bg_adj) < len(final_voice_adj):
         bg_adj = bg_adj + AudioSegment.silent(duration=(len(final_voice_adj) - len(bg_adj)))
-    else:
+    elif len(bg_adj) > len(final_voice_adj):
         bg_adj = bg_adj[:len(final_voice_adj)]
 
-    print("🎧 Aplicando Auto-Ducking (diminuindo música durante as falas)...")
-    # Aplica redução de 10dB onde há voz
-    try:
-        if frases_refinadas:
-            for f_ref in frases_refinadas:
-                s_ms = int(f_ref["real_start"] * 1000)
-                e_ms = int(f_ref["real_end"] * 1000)
-                if e_ms <= len(bg_adj):
-                    # Reduz volume do bg durante o trecho (-10dB)
-                    trecho_reduzido = bg_adj[s_ms:e_ms] - 10
-                    # Reconstrói
-                    bg_adj = bg_adj[:s_ms] + trecho_reduzido + bg_adj[e_ms:]
-    except Exception as e:
-        print(f"⚠️ Erro ao aplicar ducking, prosseguindo com volume original: {e}")
-
+    # Mix simples: voz sobre fundo
     mix = bg_adj.overlay(final_voice_adj)
     mix.export("audio_final_mix.wav", format="wav")
     print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
+    print(f"   Voz: +3dB | Fundo: -6dB")
     log_progress(logger, 95.0)
 else:
-    print("⚠️ Som de fundo não encontrado nas pastas do Demucs.")
+    # Se não encontrou, tenta buscar em subdiretórios
+    print("⚠️ Som de fundo não encontrado em:", bg_dir)
+    print("   Procurando em subdiretórios de 'separated/'...")
+    
+    separated_dirs = glob.glob("separated/htdemucs/*")
+    if separated_dirs:
+        print(f"   Diretórios encontrados: {separated_dirs}")
+        bg_dir = separated_dirs[0]  # Usa o primeiro encontrado
+        bg = carregar_fundo(bg_dir)
+        
+        if bg is not None:
+            print(f"✅ Som de fundo encontrado em: {bg_dir}")
+            final_voice_adj = final_voice + 3
+            bg_adj = bg - 6
+            
+            if len(bg_adj) < len(final_voice_adj):
+                bg_adj = bg_adj + AudioSegment.silent(duration=(len(final_voice_adj) - len(bg_adj)))
+            elif len(bg_adj) > len(final_voice_adj):
+                bg_adj = bg_adj[:len(final_voice_adj)]
+            
+            mix = bg_adj.overlay(final_voice_adj)
+            mix.export("audio_final_mix.wav", format="wav")
+            print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
+            log_progress(logger, 95.0)
+        else:
+            print("❌ Nenhum som de fundo encontrado em nenhum subdiretório.")
+            print("   Verifique se o Demucs foi executado corretamente.")
+    else:
+        print("❌ Nenhum diretório 'separated/' encontrado.")
 
 # 5. Juntar áudio final com o vídeo original usando ffmpeg
 video_dublado = None  # << evita NameError
@@ -307,10 +353,14 @@ else:
 
 print("🚀 Pipeline completo!")
 
-# Chama automaticamente o script de limpeza
-print("🧹 Limpando arquivos temporários e intermediários...")
-ROOT = os.path.dirname(os.path.abspath(__file__))
-subprocess.run([sys.executable, "limpar_projeto.py"], check=False, cwd=ROOT)
+from config_loader import config
+if config.get("app.clean_after_completion", True):
+    # Chama automaticamente o script de limpeza
+    print("🧹 Limpando arquivos temporários e intermediários...")
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run([sys.executable, "limpar_projeto.py"], check=False, cwd=ROOT)
+else:
+    print("🧹 Limpeza automática desativada (app.clean_after_completion=false).")
 
 print("=" * 60)
 print("🎉 PROCESSO COMPLETO FINALIZADO!")

@@ -1,10 +1,11 @@
 import os
 import pickle
+import shutil
+import sys
 import torch
 from pathlib import Path
 from typing import Any, Optional
 import whisper
-import sys
 
 # Adiciona caminho do TTS se necessário
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TTS"))
@@ -130,6 +131,11 @@ class ModelCache:
         """
         if TTS is None:
             raise RuntimeError("Biblioteca TTS não instalada.")
+
+        # Garante cache do Coqui TTS em pasta local do projeto (evita AppData quebrado/corrompido)
+        self._configure_tts_home()
+        # Se o diretório do modelo existir mas estiver incompleto, força re-download.
+        self._ensure_coqui_model_present(model_name)
             
         cache_key = f"tts_{model_name}_{device}"
         
@@ -155,6 +161,99 @@ class ModelCache:
             return tts
         except Exception as e:
             logger.error(f"Erro ao carregar TTS: {e}")
+            raise
+
+    def _configure_tts_home(self) -> Path:
+        """Define `TTS_HOME` para um diretório local (se ainda não definido).
+
+        Isso torna o projeto mais portátil e evita caches corrompidos em
+        `AppData/Local/tts` (causa comum do erro `model.pth` faltando).
+        """
+        if os.environ.get("TTS_HOME"):
+            return Path(os.environ["TTS_HOME"]).expanduser().resolve(strict=False)
+
+        # Permite sobrescrever via config, caso o usuário queira.
+        cfg_home = config.get("paths.tts_home", None)
+        if cfg_home:
+            home_path = Path(cfg_home)
+            if not home_path.is_absolute():
+                home_path = (Path(__file__).parent / home_path).resolve(strict=False)
+        else:
+            home_path = (Path(__file__).parent / self.cache_dir / "tts_home").resolve(strict=False)
+
+        ensure_dir(home_path)
+        os.environ["TTS_HOME"] = str(home_path)
+        logger.debug(f"📦 TTS_HOME configurado: {home_path}")
+        return home_path
+
+    def _coqui_model_dir(self, model_name: str) -> Path:
+        # `get_user_data_dir('tts')` aponta para `<TTS_HOME>/tts`.
+        from TTS.utils.generic_utils import get_user_data_dir
+
+        model_full_name = model_name.replace("/", "--")
+        return Path(get_user_data_dir("tts")).joinpath(model_full_name)
+
+    def _coqui_tos_agreed(self, model_dir: Path) -> bool:
+        if os.environ.get("COQUI_TOS_AGREED") == "1":
+            return True
+        try:
+            return model_dir.joinpath("tos_agreed.txt").exists()
+        except Exception:
+            return False
+
+    def _ensure_coqui_model_present(self, model_name: str) -> None:
+        """Valida a presença dos arquivos essenciais do modelo no cache local.
+
+        Para XTTS, é comum a pasta existir e faltar `model.pth`, o que faz o
+        Coqui dizer "already downloaded" mas falhar no load.
+        """
+        try:
+            model_dir = self._coqui_model_dir(model_name)
+        except Exception:
+            # Se falhar por qualquer motivo, deixa o Coqui lidar.
+            return
+
+        if not model_dir.exists():
+            return
+
+        # Arquivo de checkpoint pode ter nomes diferentes dependendo do modelo.
+        model_files = [
+            model_dir / "model.pth",
+            model_dir / "model_file.pth",
+            model_dir / "model_file.pth.tar",
+        ]
+        has_model_file = any(p.exists() for p in model_files)
+        has_config = (model_dir / "config.json").exists()
+
+        if has_model_file and has_config:
+            return
+
+        # Pasta existe mas está incompleta -> limpa e força download.
+        logger.warning(f"⚠️ Cache do Coqui TTS incompleto para {model_name}: {model_dir}")
+        logger.warning("   Limpando pasta do modelo e forçando re-download...")
+
+        # Se for XTTS e não houver TOS aceito, não tente baixar em modo não-interativo.
+        if "xtts" in model_name.lower() and (not self._coqui_tos_agreed(model_dir)):
+            allow_prompt = os.environ.get("COQUI_TOS_ALLOW_PROMPT") == "1"
+            if (not sys.stdin.isatty()) and (not allow_prompt):
+                raise RuntimeError(
+                    "XTTS requer aceitar os termos (CPML). Rode `python dublar_frases_pt.py` no terminal uma vez "
+                    "e aceite o prompt, ou defina a env `COQUI_TOS_AGREED=1`. "
+                    "(Dica: para aceitar pela GUI, execute com `COQUI_TOS_ALLOW_PROMPT=1`.)"
+                )
+
+        try:
+            shutil.rmtree(model_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+        try:
+            from TTS.utils.manage import ModelManager
+
+            mm = ModelManager(progress_bar=True, verbose=True)
+            mm.download_model(model_name)
+        except Exception as e:
+            logger.error(f"Falha ao rebaixar modelo {model_name}: {e}")
             raise
 
     def clear_memory(self):

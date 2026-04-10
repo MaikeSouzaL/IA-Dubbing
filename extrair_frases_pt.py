@@ -160,4 +160,7 @@ if not frases_pt:
             logger.error(f"Erro no fallback: {e}")
 
 logger.info("🔄 Iniciando dublagem...")
-subprocess.run([sys.executable, "dublar_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
+ret = subprocess.run([sys.executable, "dublar_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
+if ret.returncode != 0:
+    logger.error(f"❌ dublar_frases_pt.py falhou (código {ret.returncode}).")
+    sys.exit(ret.returncode)

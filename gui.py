@@ -183,8 +183,17 @@ class DubbingApp:
         
         ctk.CTkLabel(log_frame, text="Progresso e Logs", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=(10, 5))
         
-        self.log_textbox = ctk.CTkTextbox(log_frame, state="disabled", font=ctk.CTkFont(family="Consolas", size=12), height=200)
+        # Console de logs (permite input no final para responder prompts em CLI)
+        self.log_textbox = ctk.CTkTextbox(log_frame, state="normal", font=ctk.CTkFont(family="Consolas", size=12), height=200)
         self.log_textbox.pack(fill="both", expand=True, padx=15, pady=5)
+
+        # Estado do console interativo
+        self._console_prompt = "> "
+        self._console_prompt_start = None
+        self._console_input_start = None
+        self._running_process = None
+        self._console_init_bindings()
+        self._console_reset()
         
         # Footer Frame
         footer_frame = ctk.CTkFrame(self.root, fg_color="transparent")
@@ -293,6 +302,113 @@ class DubbingApp:
     def log(self, message, level="INFO"):
         self.log_queue.put((message, level))
 
+    # --------------------------
+    # Console interativo (stdin)
+    # --------------------------
+    def _console_init_bindings(self):
+        # Enter envia a linha para o processo em execução.
+        self.log_textbox.bind("<Return>", self._console_on_enter)
+        # Bloqueia edição fora do prompt atual.
+        self.log_textbox.bind("<KeyPress>", self._console_on_keypress)
+
+    def _console_reset(self):
+        self._console_prompt_start = None
+        self._console_input_start = None
+        self._console_ensure_prompt()
+
+    def _console_ensure_prompt(self, restore_input: str = ""):
+        # Insere um prompt no final e restaura eventual input digitado.
+        end_idx = self.log_textbox.index("end-1c")
+        self.log_textbox.insert("end", self._console_prompt + (restore_input or ""))
+        self._console_prompt_start = end_idx
+        self._console_input_start = self.log_textbox.index(f"{end_idx}+{len(self._console_prompt)}c")
+        self.log_textbox.see("end")
+        self.log_textbox.mark_set("insert", "end-1c")
+
+    def _console_get_current_input(self) -> str:
+        if self._console_input_start is None:
+            return ""
+        try:
+            return self.log_textbox.get(self._console_input_start, "end-1c")
+        except Exception:
+            return ""
+
+    def _console_write_output(self, text: str):
+        # Escreve output acima do prompt, preservando o input que o usuário já digitou.
+        if not text:
+            return
+        if not text.endswith("\n"):
+            text += "\n"
+
+        # Se por algum motivo não houver prompt, só anexa.
+        if self._console_prompt_start is None or self._console_input_start is None:
+            self.log_textbox.insert("end", text)
+            self.log_textbox.see("end")
+            self._console_ensure_prompt()
+            return
+
+        current_input = self._console_get_current_input()
+        try:
+            # Remove prompt+input atual e reescreve depois do output.
+            self.log_textbox.delete(self._console_prompt_start, "end-1c")
+        except Exception:
+            pass
+
+        self.log_textbox.insert("end", text)
+        self._console_ensure_prompt(restore_input=current_input)
+
+    def _console_on_click(self, event):
+        # Mantém comportamento de terminal: clique posiciona no fim.
+        try:
+            self.log_textbox.mark_set("insert", "end-1c")
+            self.log_textbox.see("end")
+        except Exception:
+            pass
+        return "break"
+
+    def _console_on_keypress(self, event):
+        # Impede edição acima do prompt atual.
+        if self._console_prompt_start is None or self._console_input_start is None:
+            return
+
+        try:
+            insert_idx = self.log_textbox.index("insert")
+            if self.log_textbox.compare(insert_idx, "<", self._console_input_start):
+                self.log_textbox.mark_set("insert", "end-1c")
+                self.log_textbox.see("end")
+                return "break"
+
+            # Bloqueia backspace antes do início do input.
+            if event.keysym == "BackSpace":
+                if self.log_textbox.compare(insert_idx, "<=", self._console_input_start):
+                    return "break"
+        except Exception:
+            return
+
+    def _console_on_enter(self, event):
+        # Captura a linha digitada e envia ao stdin do subprocess.
+        line = self._console_get_current_input().strip("\r\n")
+
+        # Fecha a linha atual e abre novo prompt.
+        self.log_textbox.insert("end", "\n")
+        self._console_prompt_start = None
+        self._console_input_start = None
+        self._console_ensure_prompt()
+
+        # Envia para o processo rodando (se houver).
+        proc = getattr(self, "_running_process", None)
+        if proc is not None and getattr(proc, "stdin", None) is not None:
+            try:
+                proc.stdin.write(line + "\n")
+                proc.stdin.flush()
+            except Exception as e:
+                self._console_write_output(f"[console] Falha ao enviar entrada para o processo: {e}")
+        else:
+            # Se não há processo rodando, só mantém como histórico.
+            pass
+
+        return "break"
+
     def process_log_queue(self):
         import re
         while not self.log_queue.empty():
@@ -332,7 +448,6 @@ class DubbingApp:
                 except ValueError:
                     pass
 
-            self.log_textbox.configure(state='normal')
             
             if not re.match(r"\d{4}-\d{2}-\d{2}", msg):
                 from datetime import datetime
@@ -350,10 +465,9 @@ class DubbingApp:
                 full_msg_tagged = f"✅ {full_msg}"
             else:
                 full_msg_tagged = full_msg
-                
-            self.log_textbox.insert("end", full_msg_tagged)
-            self.log_textbox.see("end")
-            self.log_textbox.configure(state='disabled')
+
+            # Escreve como console: output acima do prompt e preserva input.
+            self._console_write_output(full_msg_tagged)
             
             clean_msg = msg.split("|")[-1].strip() if "|" in msg else msg
             self.status_var.set(clean_msg[:100] + "..." if len(clean_msg) > 100 else clean_msg)
@@ -410,9 +524,8 @@ class DubbingApp:
         self.progress_bar_widget.set(0)
         self.progress_var.set(0.0)
         
-        self.log_textbox.configure(state='normal')
         self.log_textbox.delete(1.0, "end")
-        self.log_textbox.configure(state='disabled')
+        self._console_reset()
         if is_preview:
             self.stage_var.set("Iniciando Amostra (15s)...")
         else:
@@ -445,6 +558,9 @@ class DubbingApp:
             
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
+            # Permite que o Coqui TTS mostre o prompt de termos via stdin pipe (GUI).
+            # Sem isso, o XTTS pode ser bloqueado em modo não-TTY.
+            env["COQUI_TOS_ALLOW_PROMPT"] = "1"
             if is_preview:
                 env["TRANSCRIBER_PREVIEW"] = "1"
 
@@ -460,6 +576,9 @@ class DubbingApp:
                 encoding='utf-8',
                 errors='replace'
             )
+
+            # Guarda referência para permitir input via console.
+            self._running_process = process
             
             process.stdin.write(input_str)
             process.stdin.flush()
@@ -473,6 +592,9 @@ class DubbingApp:
                     self.log(line)
             
             process.wait()
+
+            # Processo terminou, desliga console stdin.
+            self._running_process = None
             
             if process.returncode == 0 and self.is_running:
                 self.log("✅ Processo concluído com sucesso!", "SUCCESS")
@@ -488,6 +610,7 @@ class DubbingApp:
             self.log(traceback.format_exc(), "ERROR")
             
         finally:
+            self._running_process = None
             self.cleanup_ui()
 
     def cleanup_ui(self):
