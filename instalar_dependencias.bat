@@ -1,6 +1,6 @@
 @echo off
 echo Ativando o ambiente virtual...
-call venv\Scripts\activate
+call .venv\Scripts\activate
 
 echo Instalando dependências do projeto...
 pip install -r requirements.txt

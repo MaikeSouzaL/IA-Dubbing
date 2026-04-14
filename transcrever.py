@@ -212,25 +212,52 @@ if __name__ == "__main__":
             'noprogress': True # Esconde a barrinha poluidora do terminal do yt-dlp
         }
         
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                f = ydl.prepare_filename(info)
-            logger.info(f"✅ Vídeo salvo como: {f}")
-        except Exception as e:
-            if "403" in str(e) or "Forbidden" in str(e):
-                logger.warning("⚠️ Erro 403 Forbidden retornado pelo YouTube. O yt-dlp pode estar desatualizado.")
-                logger.info("🔄 Tentando atualizar o yt-dlp automaticamente...")
-                subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], check=False)
-                logger.info("⏬ Tentando baixar novamente...")
-                import importlib
-                importlib.reload(yt_dlp)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # Define uma lista de navegadores para tentar extrair os cookies caso o YouTube bloqueie por "Bot"
+        browsers_to_try = [None, ('chrome',), ('edge',), ('firefox',), ('brave',), ('opera',)]
+        
+        f = None
+        last_error = None
+        for browser_tuple in browsers_to_try:
+            opts = dict(ydl_opts)
+            if browser_tuple:
+                opts['cookiesfrombrowser'] = browser_tuple
+                logger.info(f"🔄 Tentando bypass de Bot usando cookies do navegador: {browser_tuple[0]}...")
+            
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     f = ydl.prepare_filename(info)
                 logger.info(f"✅ Vídeo salvo como: {f}")
+                break  # Sucesso! Sai do loop
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if "sign in to confirm" in err_str or "bot" in err_str or "cookie" in err_str or "dpapi" in err_str:
+                    if browser_tuple is None:
+                        logger.warning("⚠️ YouTube bloqueou o acesso pedindo login ou provar que não é um robô.")
+                    # Continua para o próximo navegador no loop
+                    continue
+                elif "403" in err_str or "forbidden" in err_str:
+                    logger.warning("⚠️ Erro 403 Forbidden retornado pelo YouTube. O yt-dlp pode estar desatualizado.")
+                    logger.info("🔄 Tentando atualizar o yt-dlp automaticamente...")
+                    subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"], check=False)
+                    import importlib
+                    importlib.reload(yt_dlp)
+                    # Tenta baixar novamente apenas uma vez com yt-dlp atualizado para 403
+                    with yt_dlp.YoutubeDL(opts) as ydl_updated:
+                        info = ydl_updated.extract_info(url, download=True)
+                        f = ydl_updated.prepare_filename(info)
+                    logger.info(f"✅ Vídeo salvo como: {f}")
+                    break
+                else:
+                    raise e
+        
+        if not f:
+            logger.error("❌ Não foi possível baixar o vídeo mesmo tentando usar cookies dos navegadores.")
+            if last_error is not None:
+                raise last_error
             else:
-                raise e
+                raise Exception("Falha desconhecida sem erros prévios registrados.")
     elif escolha == "2":
         try:
             f = sys.stdin.readline().strip()

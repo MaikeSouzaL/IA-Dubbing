@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Optional
 import whisper
 
+# Auto-aceitação dos termos do Coqui TTS para rodar XTTS
+os.environ["COQUI_TOS_AGREED"] = "1"
+
 # Adiciona caminho do TTS se necessário
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "TTS"))
 try:
