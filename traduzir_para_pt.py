@@ -40,6 +40,19 @@ for idx, chunk in enumerate(data, 1):
     log_progress(logger, percent)
 
     texto = (chunk.get("transcript") or "").strip()
+    
+    # Filtro anti-alucinação do Whisper para trechos "vazios"
+    texto_lower = texto.lower()
+    alucinacoes = [
+        "obrigado por assistir", "obrigada por assistir",
+        "thanks for watching", "thank you for watching",
+        "subscribe to", "inscreva-se", "amara.org", "subs by",
+        "legenda:", "legendado", "subtitles"
+    ]
+    if any(h in texto_lower for h in alucinacoes) and len(texto.split()) <= 8:
+        logger.info(f"🚫 Ignorando frase de 'vazio' gerada pela IA: '{texto}'")
+        texto = ""
+
     logger.info(f"Traduzindo {idx}/{total}...")
     traducao = ""
     if texto:
