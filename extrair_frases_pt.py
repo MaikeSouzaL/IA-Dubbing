@@ -127,7 +127,7 @@ for idx, segs in enumerate(segmentos_por_chunk):
             frase_pt_text = finalizar_com_virgula_se_ponto(frase_pt_text)
 
         frases_pt.append({
-            "frase_pt": frase_pt_text,
+            "frase_pt": frase_pt_text or "",
             "start": frase_info["start"],
             "end": frase_info["end"],
             "slot_dur": frase_info["slot_dur"],

@@ -67,7 +67,7 @@ for idx, chunk in enumerate(data, 1):
             logger.error("  Falha definitiva, mantendo vazio.")
             
     novo_chunk = chunk.copy()
-    novo_chunk["transcript_pt"] = traducao
+    novo_chunk["transcript_pt"] = traducao or ""
     data_pt.append(novo_chunk)
 
 log_progress(logger, 30.0)

@@ -157,7 +157,7 @@ for i, frase in enumerate(frases):
             "indice": i,
             "start": frase.get("start", 0),
             "end": frase.get("end", 0),
-            "texto": frase.get("frase_pt", "")[:50] + "..." if len(frase.get("frase_pt", "")) > 50 else frase.get("frase_pt", "")
+            "texto": (frase.get("frase_pt") or "")[:50] + "..." if len(frase.get("frase_pt") or "") > 50 else (frase.get("frase_pt") or "")
         })
 
 # Log de frases puladas
