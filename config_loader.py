@@ -3,6 +3,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+try:
+    from env_utils import load_env_file
+    load_env_file()
+except Exception:
+    pass
+
 class Config:
     """
     Carrega e gerencia as configurações do sistema a partir do arquivo config.yaml.

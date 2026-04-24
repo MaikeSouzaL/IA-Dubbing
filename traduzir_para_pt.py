@@ -7,15 +7,20 @@ import os.path
 from config_loader import config
 from logger import setup_logger, log_progress
 from utils import load_json, save_json
+from job_manager import copy_artifact, mark_step
 
 logger = setup_logger(__name__)
 
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
-    logger.info("Instalando deep-translator...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "deep-translator"], check=True, encoding='utf-8', errors='replace')
-    from deep_translator import GoogleTranslator
+    if config.get("app.offline_mode", False):
+        GoogleTranslator = None
+        logger.warning("deep-translator nao instalado; modo offline usara texto original.")
+    else:
+        logger.info("Instalando deep-translator...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "deep-translator"], check=True, encoding='utf-8', errors='replace')
+        from deep_translator import GoogleTranslator
 
 IN_ARQ = "transcricao.json"
 OUT_ARQ = "transcricao_pt.json"
@@ -27,7 +32,10 @@ if not os.path.isfile(IN_ARQ):
 data = load_json(IN_ARQ)
 
 target_lang = config.get("translation.target_language", "pt")
-translator = GoogleTranslator(source='auto', target=target_lang)
+translator = GoogleTranslator(source='auto', target=target_lang) if GoogleTranslator is not None else None
+translate_chunks = config.get("translation.translate_chunks", False)
+offline_mode = config.get("app.offline_mode", False)
+offline_strategy = config.get("translation.offline_strategy", "original")
 
 data_pt = []
 total = len(data)
@@ -55,7 +63,9 @@ for idx, chunk in enumerate(data, 1):
 
     logger.info(f"Traduzindo {idx}/{total}...")
     traducao = ""
-    if texto:
+    if texto and offline_mode:
+        traducao = texto if offline_strategy == "original" else ""
+    elif texto and translate_chunks:
         for tentativa in range(retry_attempts):
             try:
                 traducao = translator.translate(texto)
@@ -65,6 +75,8 @@ for idx, chunk in enumerate(data, 1):
                 time.sleep(retry_delay * (tentativa + 1))
         if not traducao:
             logger.error("  Falha definitiva, mantendo vazio.")
+    elif texto:
+        traducao = ""
             
     novo_chunk = chunk.copy()
     novo_chunk["transcript_pt"] = traducao or ""
@@ -72,13 +84,15 @@ for idx, chunk in enumerate(data, 1):
 
 log_progress(logger, 30.0)
 save_json(data_pt, OUT_ARQ)
+copy_artifact(OUT_ARQ, OUT_ARQ)
 logger.info(f"✅ Tradução salva em {OUT_ARQ}")
 
 if not data_pt or all(not c.get("transcript_pt") for c in data_pt):
     logger.warning("⚠️ Traduções vazias; verificando conectividade ou quota.")
-else:
-    logger.info("🔄 Iniciando extração de frases e tempos...")
-    ret = subprocess.run([sys.executable, "extrair_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
-    if ret.returncode != 0:
-        logger.error(f"❌ extrair_frases_pt.py falhou (código {ret.returncode}).")
-        sys.exit(ret.returncode)
+logger.info("🔄 Iniciando extração de frases e tempos...")
+ret = subprocess.run([sys.executable, "extrair_frases_pt.py"], check=False, encoding='utf-8', errors='replace')
+if ret.returncode != 0:
+    logger.error(f"❌ extrair_frases_pt.py falhou (código {ret.returncode}).")
+    mark_step("translation", "error", code=ret.returncode)
+    sys.exit(ret.returncode)
+mark_step("translation", "done")

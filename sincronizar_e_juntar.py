@@ -6,8 +6,10 @@ import re
 import sys
 import glob
 from logger import setup_logger, log_progress
+from job_manager import copy_artifact, mark_step
 
 logger = setup_logger(__name__)
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration, min_rate=1.0, max_rate=2.0):
     # Calcula rate ideal
@@ -37,8 +39,8 @@ def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration,
         rate /= 0.5
     rates.append(rate)
     filter_str = ",".join([f"atempo={r:.5f}" for r in rates])
-    cmd = f'ffmpeg -y -i "{input_file}" -filter:a "{filter_str}" "{output_file}"'
-    os.system(cmd)
+    cmd = ["ffmpeg", "-y", "-i", input_file, "-filter:a", filter_str, output_file]
+    subprocess.run(cmd, check=False)
 
 
 def get_video_duration(video_path):
@@ -65,7 +67,9 @@ def detectar_onset_offset_audio(audio_seg, threshold_db=-38):
     return inicio_real, min(fim_real, len(audio_seg))
 
 # === CONFIGURAÇÕES ===
-tts_dir = "audios_frases_pt"
+from config_loader import config
+
+tts_dir = config.get("paths.tts_output_dir", "audios_frases_pt")
 stretched_dir = "audios_frases_pt_stretched"
 os.makedirs(stretched_dir, exist_ok=True)
 
@@ -217,6 +221,7 @@ else:
         final_voice = AudioSegment.silent(duration=int(video_dur * 1000))
 
 final_voice.export("voz_dublada.wav", format="wav")
+copy_artifact("voz_dublada.wav", "voz_dublada.wav")
 print("✅ voz_dublada.wav criada com encaixe perfeito de slots!")
 
 # 4. Juntar com o som de fundo (accompaniment)
@@ -298,6 +303,7 @@ if bg is not None:
     # Mix simples: voz sobre fundo
     mix = bg_adj.overlay(final_voice_adj)
     mix.export("audio_final_mix.wav", format="wav")
+    copy_artifact("audio_final_mix.wav", "audio_final_mix.wav")
     print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
     print(f"   Voz: +3dB | Fundo: -6dB")
     log_progress(logger, 95.0)
@@ -324,6 +330,7 @@ else:
             
             mix = bg_adj.overlay(final_voice_adj)
             mix.export("audio_final_mix.wav", format="wav")
+            copy_artifact("audio_final_mix.wav", "audio_final_mix.wav")
             print("✅ audio_final_mix.wav criada com voz dublada + som de fundo!")
             log_progress(logger, 95.0)
         else:
@@ -336,14 +343,24 @@ else:
 video_dublado = None  # << evita NameError
 if os.path.isfile("audio_final_mix.wav"):
     video_dublado = f"{video_stem}_dublado.mp4"
-    cmd_ffmpeg = f'ffmpeg -y -i "{video_filename}" -i audio_final_mix.wav -c:v copy -map 0:v:0 -map 1:a:0 -shortest "{video_dublado}"'
+    cmd_ffmpeg = [
+        "ffmpeg", "-y",
+        "-i", video_filename,
+        "-i", "audio_final_mix.wav",
+        "-c:v", "copy",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-shortest",
+        video_dublado,
+    ]
     print("\nGerando vídeo dublado automaticamente...")
-    os.system(cmd_ffmpeg)
+    subprocess.run(cmd_ffmpeg, check=False)
     print(f"\nProcesso finalizado! Arquivo gerado: {video_dublado}")
+    copy_artifact(video_dublado, video_dublado)
+    mark_step("sync", "done", output=os.path.abspath(video_dublado))
     log_progress(logger, 100.0)
     
     # 6. Geração de Legendas (Se solicitado)
-    from config_loader import config
     if config.get("app.generate_subtitles", True):
         print("\n📝 Gerando legendas SRT...")
         subprocess.run([sys.executable, "gerar_legendas.py"], check=False, cwd=ROOT)
@@ -353,11 +370,9 @@ else:
 
 print("🚀 Pipeline completo!")
 
-from config_loader import config
 if config.get("app.clean_after_completion", True):
     # Chama automaticamente o script de limpeza
     print("🧹 Limpando arquivos temporários e intermediários...")
-    ROOT = os.path.dirname(os.path.abspath(__file__))
     subprocess.run([sys.executable, "limpar_projeto.py"], check=False, cwd=ROOT)
 else:
     print("🧹 Limpeza automática desativada (app.clean_after_completion=false).")

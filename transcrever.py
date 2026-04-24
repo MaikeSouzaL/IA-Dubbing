@@ -10,6 +10,13 @@ from deep_translator import GoogleTranslator
 from config_loader import config
 from logger import setup_logger, log_progress
 from utils import save_json, safe_remove
+from transcription_providers import (
+    get_provider_model,
+    get_provider_name,
+    result_to_pipeline_chunk,
+    transcribe_external,
+)
+from job_manager import add_artifact, copy_artifact, create_job, mark_step
 
 logger = setup_logger(__name__)
 
@@ -166,6 +173,168 @@ def transcrever_para_json(chunks, idioma, model, traduzir_en=False):
     log_progress(logger, 20.0)
     return resultados
 
+def transcrever_externo_para_json(audio_path, idioma=None, start=0.0, end=None):
+    """Transcreve via API externa e converte para o formato interno do pipeline."""
+    if config.get("app.offline_mode", False):
+        raise RuntimeError("Modo offline ativo: provedores externos de transcricao estao desabilitados.")
+    provider = get_provider_name()
+    result = transcribe_external(audio_path, provider, language=idioma)
+    if end is None:
+        audio = AudioSegment.from_file(audio_path)
+        end = len(audio) / 1000.0
+    chunk = result_to_pipeline_chunk(result, audio_path, float(start), float(end))
+    log_progress(logger, 20.0)
+    return [chunk]
+
+def salvar_manifesto_chunks(chunks, path="cache/chunks_manifest.json"):
+    try:
+        save_json(chunks, path)
+    except Exception as e:
+        logger.debug(f"Falha ao salvar manifesto de chunks: {e}")
+
+def encontrar_corte_silencioso(audio, target_ms, min_ms, max_ms, silence_thresh=-42, min_silence_ms=600):
+    """Procura uma pausa perto do limite desejado para evitar cortar fala."""
+    min_ms = max(0, int(min_ms))
+    max_ms = min(len(audio), int(max_ms))
+    target_ms = min(max(int(target_ms), min_ms), max_ms)
+    if max_ms <= min_ms:
+        return target_ms
+
+    step_ms = 100
+    best_cut = None
+    best_distance = None
+    silence_start = None
+
+    for pos in range(min_ms, max_ms, step_ms):
+        window = audio[pos:min(pos + step_ms, max_ms)]
+        is_silent = window.dBFS == float("-inf") or window.dBFS <= silence_thresh
+        if is_silent and silence_start is None:
+            silence_start = pos
+        elif (not is_silent) and silence_start is not None:
+            if pos - silence_start >= min_silence_ms:
+                candidate = silence_start + ((pos - silence_start) // 2)
+                distance = abs(candidate - target_ms)
+                if best_distance is None or distance < best_distance:
+                    best_cut = candidate
+                    best_distance = distance
+            silence_start = None
+
+    if silence_start is not None and max_ms - silence_start >= min_silence_ms:
+        candidate = silence_start + ((max_ms - silence_start) // 2)
+        distance = abs(candidate - target_ms)
+        if best_distance is None or distance < best_distance:
+            best_cut = candidate
+
+    return int(best_cut if best_cut is not None else target_ms)
+
+def dividir_audio_api(audio_path, max_seconds=480):
+    """Divide um audio longo em blocos seguros, preferindo cortes em silencio."""
+    audio = AudioSegment.from_file(audio_path)
+    total_ms = len(audio)
+    max_ms = max(1, int(float(max_seconds) * 1000))
+    overlap_ms = int(float(config.get("transcription.api_chunk_overlap_seconds", 2.0)) * 1000)
+    search_ms = int(float(config.get("transcription.api_chunk_silence_search_seconds", 25.0)) * 1000)
+    silence_thresh = float(config.get("transcription.api_chunk_silence_threshold_db", -42))
+    min_silence_ms = int(config.get("transcription.api_chunk_min_silence_ms", 600))
+    base = os.path.splitext(os.path.basename(audio_path))[0]
+    api_chunks = []
+
+    idx = 0
+    start_ms = 0
+    while start_ms < total_ms:
+        target_end = min(start_ms + max_ms, total_ms)
+        if target_end >= total_ms:
+            end_ms = total_ms
+        else:
+            end_ms = encontrar_corte_silencioso(
+                audio,
+                target_ms=target_end,
+                min_ms=max(start_ms + int(max_ms * 0.65), target_end - search_ms),
+                max_ms=min(total_ms, target_end + search_ms),
+                silence_thresh=silence_thresh,
+                min_silence_ms=min_silence_ms,
+            )
+            if end_ms <= start_ms + 1000:
+                end_ms = target_end
+
+        export_start_ms = max(0, start_ms - (overlap_ms if idx > 0 else 0))
+        chunk_path = f"{base}_api_{idx:03d}.wav"
+        audio[export_start_ms:end_ms].export(chunk_path, format="wav")
+        api_chunks.append({
+            "fname": chunk_path,
+            "start": export_start_ms / 1000.0,
+            "end": end_ms / 1000.0,
+            "temp": True,
+            "api_chunk": True,
+            "nominal_start": start_ms / 1000.0,
+            "overlap_seconds": (start_ms - export_start_ms) / 1000.0,
+        })
+        idx += 1
+        if end_ms >= total_ms:
+            break
+        start_ms = end_ms
+    return api_chunks
+
+def deduplicar_palavras_transcricao(data, tolerance=0.35):
+    """Remove palavras duplicadas criadas por sobreposicao entre blocos."""
+    seen = []
+    cleaned = []
+    for chunk in sorted(data, key=lambda x: float(x.get("start", 0.0))):
+        new_words = []
+        for word in chunk.get("words", []) or []:
+            txt = (word.get("word") or "").strip().lower()
+            start = float(word.get("start", 0.0))
+            duplicate = False
+            for prev_txt, prev_start in seen[-80:]:
+                if txt == prev_txt and abs(start - prev_start) <= tolerance:
+                    duplicate = True
+                    break
+            if not duplicate:
+                new_words.append(word)
+                seen.append((txt, start))
+        new_chunk = chunk.copy()
+        new_chunk["words"] = new_words
+        if new_words:
+            new_chunk["transcript"] = " ".join(w["word"] for w in new_words)
+        cleaned.append(new_chunk)
+    return cleaned
+
+def gerar_relatorio_transcricao(data, output_path="transcription_report.json"):
+    try:
+        total_words = 0
+        confidences = []
+        covered = 0.0
+        gaps = []
+        last_end = 0.0
+        for chunk in sorted(data, key=lambda x: float(x.get("start", 0.0))):
+            words = chunk.get("words", []) or []
+            total_words += len(words)
+            for w in words:
+                if w.get("confidence") is not None:
+                    try:
+                        confidences.append(float(w["confidence"]))
+                    except Exception:
+                        pass
+            start = float(chunk.get("start", 0.0))
+            end = float(chunk.get("end", start))
+            if start - last_end > 0.5:
+                gaps.append({"start": last_end, "end": start, "duration": start - last_end})
+            covered += max(0.0, end - start)
+            last_end = max(last_end, end)
+        report = {
+            "chunks": len(data),
+            "words": total_words,
+            "covered_seconds": covered,
+            "duration_until_last_chunk": last_end,
+            "coverage_ratio": (covered / last_end) if last_end else 0.0,
+            "gaps_over_500ms": gaps,
+            "average_confidence": (sum(confidences) / len(confidences)) if confidences else None,
+        }
+        save_json(report, output_path)
+        logger.info(f"Relatorio de qualidade salvo em {output_path}")
+    except Exception as e:
+        logger.warning(f"Nao foi possivel gerar relatorio de transcricao: {e}")
+
 if __name__ == "__main__":
     # Flag para evitar divisão recursiva quando processando partes
     is_part = os.environ.get("TRANSCRIBER_IS_PART", "0") == "1"
@@ -179,11 +348,16 @@ if __name__ == "__main__":
         escolha = input("Opção (1 ou 2): ").strip()
     f = ""
     if escolha == "1":
+        if config.get("app.offline_mode", False):
+            logger.error("Modo offline ativo: URLs do YouTube nao podem ser baixadas sem internet. Use um arquivo local.")
+            sys.exit(1)
         try:
             url = sys.stdin.readline().strip()
         except:
             url = input("Cole a URL do vídeo do YouTube: ").strip()
         logger.info("⏬ Baixando vídeo do YouTube...")
+        create_job(url, input_mode="url")
+        mark_step("download", "running")
         try:
             import yt_dlp
         except ImportError:
@@ -228,6 +402,8 @@ if __name__ == "__main__":
                     info = ydl.extract_info(url, download=True)
                     f = ydl.prepare_filename(info)
                 logger.info(f"✅ Vídeo salvo como: {f}")
+                mark_step("download", "done", path=os.path.abspath(f))
+                add_artifact("input_video", f)
                 break  # Sucesso! Sai do loop
             except Exception as e:
                 last_error = e
@@ -263,6 +439,8 @@ if __name__ == "__main__":
             f = sys.stdin.readline().strip()
         except:
             f = input("Nome do arquivo (ex: Video.mp4): ").strip()
+        create_job(f, input_mode="file")
+        add_artifact("input_video", f)
     else:
         logger.error("Opção inválida.")
         sys.exit(1)
@@ -447,6 +625,12 @@ if __name__ == "__main__":
             logger.debug(f"Erro ao verificar duração do vídeo: {e}. Continuando normalmente...")
     
     base = os.path.splitext(os.path.basename(f))[0]
+    vocals_path = os.path.join(
+        config.get("paths.separated_dir", "separated"),
+        config.get("models.demucs.model", "htdemucs"),
+        base,
+        "vocals.wav",
+    )
     # Verifica se já existem chunks processados
     # Escapa caracteres especiais no nome do arquivo para uso em glob
     base_escaped = glob.escape(base)
@@ -454,16 +638,43 @@ if __name__ == "__main__":
     chunks = []
     if arquivos_vad:
         logger.info(f"Encontrados {len(arquivos_vad)} arquivos segmentados. Pulando nova segmentação.")
-        tempo_acumulado = 0.0
-        for fname in arquivos_vad:
-            audio_seg = AudioSegment.from_file(fname)
-            dur = len(audio_seg) / 1000.0
-            chunks.append({"fname": fname, "start": tempo_acumulado, "end": tempo_acumulado + dur, "temp": False})
-            tempo_acumulado += dur
+        manifest_path = "cache/chunks_manifest.json"
+        manifest_loaded = False
+        if os.path.isfile(manifest_path):
+            try:
+                from utils import load_json
+                manifest = load_json(manifest_path)
+                manifest_names = {os.path.basename(c.get("fname", "")) for c in manifest}
+                vad_names = {os.path.basename(x) for x in arquivos_vad}
+                if vad_names.issubset(manifest_names):
+                    chunks = [
+                        {**c, "temp": False}
+                        for c in manifest
+                        if os.path.basename(c.get("fname", "")) in vad_names and os.path.isfile(c.get("fname", ""))
+                    ]
+                    chunks.sort(key=lambda x: float(x.get("start", 0.0)))
+                    manifest_loaded = bool(chunks)
+                    if manifest_loaded:
+                        logger.info("Tempos originais dos chunks restaurados do manifesto.")
+            except Exception as e:
+                logger.warning(f"Nao foi possivel carregar manifesto de chunks: {e}")
+        if not manifest_loaded:
+            logger.warning("Manifesto de chunks ausente; reconstruindo tempos por duracao acumulada.")
+            tempo_acumulado = 0.0
+            for fname in arquivos_vad:
+                audio_seg = AudioSegment.from_file(fname)
+                dur = len(audio_seg) / 1000.0
+                chunks.append({"fname": fname, "start": tempo_acumulado, "end": tempo_acumulado + dur, "temp": False})
+                tempo_acumulado += dur
     else:
+        mark_step("demucs", "running")
         vocals_path = separar_vocals_demucs(f)
+        mark_step("demucs", "done", path=os.path.abspath(vocals_path))
+        copy_artifact(vocals_path, "vocals.wav")
         logger.info("Segmentando áudio de voz com VAD...")
+        mark_step("vad", "running")
         chunks = dividir_audio_vad(vocals_path)
+        mark_step("vad", "done", chunks=len(chunks))
     if not chunks:
         logger.warning("VAD não encontrou fala. Usando arquivo inteiro.")
         vocals_path = os.path.join(
@@ -532,14 +743,93 @@ if __name__ == "__main__":
                 logger.info("💡 Gaps muito pequenos (<2s) não serão transcritos separadamente")
             
             logger.info("💡 Dica: Considere reduzir 'aggressiveness' do VAD em config.yaml se muitos gaps aparecerem")
-    idioma = detectar_idioma(chunks[0]["fname"])
-    model_size = config.get("models.whisper.size", "medium")
-    logger.info(f"Carregando modelo Whisper ({model_size})...")
-    from model_cache import model_cache
-    model = model_cache.get_whisper(model_size)
-    data = transcrever_para_json(chunks, idioma, model, traduzir_en=False)
+    salvar_manifesto_chunks(chunks)
+    copy_artifact("cache/chunks_manifest.json", "chunks_manifest.json")
+
+    provider = get_provider_name()
+    if config.get("app.offline_mode", False) and provider != "local_whisper":
+        logger.warning("Modo offline ativo: ignorando provedor externo e usando Whisper local.")
+        provider = "local_whisper"
+    idioma_config = config.get("transcription.source_language", "auto")
+    idioma = None if idioma_config in (None, "", "auto") else idioma_config
+    if provider == "local_whisper" or config.get("transcription.force_local_language_detection", False):
+        idioma = detectar_idioma(chunks[0]["fname"])
+
+    data = None
+    mark_step("transcription", "running", provider=provider)
+    if provider != "local_whisper":
+        try:
+            model_name = get_provider_model(provider)
+            logger.info(f"Usando provedor externo de transcricao: {provider} ({model_name})")
+            use_full_audio = config.get("transcription.use_full_vocals_audio", True)
+            external_audio = vocals_path if use_full_audio and os.path.isfile(vocals_path) else chunks[0]["fname"]
+            default_full_limit = 24 if provider == "openai" else 200
+            max_full_audio_mb = float(config.get("transcription.max_full_audio_mb", default_full_limit))
+            if provider == "openai":
+                max_full_audio_mb = min(max_full_audio_mb, 24.0)
+            max_full_audio_seconds = float(config.get("transcription.max_full_audio_seconds", 540))
+            if provider in ("assemblyai", "google"):
+                max_full_audio_seconds = float(config.get("transcription.max_full_audio_seconds", 3600))
+            vocals_duration = None
+            if use_full_audio and os.path.isfile(vocals_path):
+                audio_ref = AudioSegment.from_file(vocals_path)
+                vocals_duration = len(audio_ref) / 1000.0
+            can_use_full_audio = (
+                use_full_audio
+                and os.path.isfile(vocals_path)
+                and (os.path.getsize(vocals_path) / (1024 * 1024)) <= max_full_audio_mb
+                and vocals_duration is not None
+                and vocals_duration <= max_full_audio_seconds
+            )
+            if can_use_full_audio:
+                data = transcrever_externo_para_json(vocals_path, idioma=idioma, start=0.0, end=vocals_duration)
+            else:
+                api_chunks = None
+                if use_full_audio and os.path.isfile(vocals_path) and vocals_duration is not None:
+                    size_mb = os.path.getsize(vocals_path) / (1024 * 1024)
+                    logger.warning(
+                        f"Audio vocal com {size_mb:.1f} MB e {vocals_duration/60:.1f} min excede limite "
+                        f"({max_full_audio_mb:.1f} MB / {max_full_audio_seconds/60:.1f} min); usando blocos de API."
+                    )
+                    api_chunk_seconds = float(config.get("transcription.api_chunk_seconds", 480))
+                    api_chunks = dividir_audio_api(vocals_path, max_seconds=api_chunk_seconds)
+                    logger.info(f"Criados {len(api_chunks)} blocos para transcricao externa.")
+                data = []
+                chunks_to_transcribe = api_chunks if api_chunks else chunks
+                for chunk in chunks_to_transcribe:
+                    data.extend(transcrever_externo_para_json(
+                        chunk["fname"],
+                        idioma=idioma,
+                        start=float(chunk.get("start", 0.0)),
+                        end=float(chunk.get("end", 0.0)),
+                    ))
+                if api_chunks:
+                    data = deduplicar_palavras_transcricao(data)
+            logger.info(f"Transcricao externa concluida usando {provider}: {external_audio}")
+            mark_step("transcription", "done", provider=provider)
+        except Exception as e:
+            fallback = config.get("transcription.fallback_provider", "local_whisper")
+            logger.error(f"Falha na transcricao externa ({provider}): {e}")
+            if fallback != "local_whisper":
+                raise
+            logger.warning("Usando fallback local com Whisper.")
+            mark_step("transcription", "fallback", provider="local_whisper", error=str(e))
+
+    if data is None:
+        if idioma is None:
+            idioma = detectar_idioma(chunks[0]["fname"])
+        model_size = config.get("models.whisper.size", "medium")
+        logger.info(f"Carregando modelo Whisper ({model_size})...")
+        from model_cache import model_cache
+        model = model_cache.get_whisper(model_size)
+        data = transcrever_para_json(chunks, idioma, model, traduzir_en=False)
+        mark_step("transcription", "done", provider="local_whisper")
+
     out_json = "transcricao.json"
     save_json(data, out_json)
+    gerar_relatorio_transcricao(data)
+    copy_artifact(out_json, "transcricao.json")
+    copy_artifact("transcription_report.json", "transcription_report.json")
     logger.info(f"✅ Transcrição salva em {out_json}")
     for c in chunks:
         if c.get("temp"):
@@ -547,7 +837,9 @@ if __name__ == "__main__":
     with open("video_original.txt", "w", encoding="utf-8") as f_video:
         f_video.write(f)
     logger.info("🔄 Iniciando tradução automática para português...")
+    mark_step("translation", "running")
     ret = subprocess.run([sys.executable, "traduzir_para_pt.py"], check=False, encoding='utf-8', errors='replace')
     if ret.returncode != 0:
+        mark_step("translation", "error", code=ret.returncode)
         logger.error(f"❌ traduzir_para_pt.py falhou (código {ret.returncode}).")
         sys.exit(ret.returncode)

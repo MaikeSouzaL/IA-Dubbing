@@ -13,6 +13,7 @@ from config_loader import config
 from logger import setup_logger, log_progress
 from utils import load_json, save_json, ensure_dir
 from voice_manager import voice_manager
+from job_manager import copy_artifact, mark_step
 
 logger = setup_logger(__name__)
 
@@ -115,6 +116,30 @@ def split_long_text(text, max_length=250):
 def split_sentences(transcript):
     frases = re.split(r'(?<=[.!?।])\s+', transcript)
     return [f.strip() for f in frases if f.strip()]
+
+def criar_referencia_voz_limpa(vocals_path):
+    if not config.get("models.tts.clean_voice_reference", True) or not os.path.isfile(vocals_path):
+        return vocals_path
+    try:
+        audio = AudioSegment.from_file(vocals_path)
+        target_ms = int(float(config.get("models.tts.voice_reference_seconds", 18)) * 1000)
+        threshold = float(config.get("models.tts.voice_reference_threshold_db", -35))
+        selected = AudioSegment.silent(duration=0)
+        for pos in range(0, len(audio), 500):
+            chunk = audio[pos:pos + 500]
+            if chunk.dBFS != float("-inf") and chunk.dBFS >= threshold:
+                selected += chunk
+                if len(selected) >= target_ms:
+                    break
+        if len(selected) < 3000:
+            return vocals_path
+        out = "voice_reference_clean.wav"
+        selected[:target_ms].fade_in(20).fade_out(60).export(out, format="wav")
+        logger.info(f"✅ Referencia de voz limpa criada: {out} ({len(selected[:target_ms])/1000:.1f}s)")
+        return out
+    except Exception as e:
+        logger.warning(f"Nao foi possivel criar referencia de voz limpa: {e}")
+        return vocals_path
 
 def alinhar_frases_palavras(frases, words):
     if not frases or not words:
@@ -230,6 +255,7 @@ def dublar_frases(frases_pt_json, vocals_path, saida_dir, use_multi_voice=False)
     
     clear_cache_freq = config.get("models.tts.gpu_clear_cache_frequency", 50)
     max_retries = 3  # Número máximo de tentativas por frase
+    cuda_broken = False  # Flag: contexto CUDA corrompido → fallback CPU
     
     total_frases = len(frases)
     
@@ -268,16 +294,27 @@ def dublar_frases(frases_pt_json, vocals_path, saida_dir, use_multi_voice=False)
                 logger.debug(f"   Parte {idx+1}/{len(text_parts)}: {part[:60]}...")
         
         # LIMPA VRAM ANTES DE CADA SÍNTESE
-        if device == "cuda":
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            if i % clear_cache_freq == 0:
+        if device == "cuda" and not cuda_broken:
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                if i % clear_cache_freq == 0:
+                    try:
+                        vram_used = torch.cuda.memory_allocated() / 1024**2
+                        vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**2
+                        logger.debug(f"📊 VRAM: {vram_used:.1f}/{vram_total:.1f} MB")
+                    except Exception:
+                        pass
+            except Exception as _ec:
+                logger.warning(f"⚠️ CUDA corrompido detectado antes da frase {i+1} — migrando para CPU: {_ec}")
+                cuda_broken = True
+                device = "cpu"
                 try:
-                    vram_used = torch.cuda.memory_allocated() / 1024**2
-                    vram_total = torch.cuda.get_device_properties(0).total_memory / 1024**2
-                    logger.debug(f"📊 VRAM: {vram_used:.1f}/{vram_total:.1f} MB")
-                except:
-                    pass
+                    model_cache.clear_memory()
+                    tts = model_cache.get_tts(model_name, "cpu")
+                    logger.info("✅ Modelo TTS recarregado na CPU — continuando.")
+                except Exception as _el:
+                    logger.error(f"❌ Falha ao recarregar TTS na CPU: {_el}")
         
         # Determina qual voz usar
         voice_ref = vocals_path
@@ -329,31 +366,46 @@ def dublar_frases(frases_pt_json, vocals_path, saida_dir, use_multi_voice=False)
                     
                 except RuntimeError as e:
                     error_str = str(e).lower()
-                    if "cuda" in error_str or "out of memory" in error_str or "assert" in error_str:
+                    is_cuda_err = "cuda" in error_str or "out of memory" in error_str or "assert" in error_str
+                    if is_cuda_err:
                         logger.error(f"❌ Erro CUDA na frase {i} parte {part_idx} (tentativa {retry+1}/{max_retries}): {e}")
                         logger.debug(f"   Texto: {text_part[:100]}...")
                         
-                        # Força limpeza agressiva e reset CUDA
-                        if device == "cuda":
+                        # Tenta recuperar CUDA; se falhar, migra para CPU
+                        recovered = False
+                        if not cuda_broken:
                             try:
                                 torch.cuda.empty_cache()
                                 torch.cuda.synchronize()
                                 torch.cuda.reset_peak_memory_stats()
-                                time.sleep(0.5)  # Pequena pausa para estabilizar
-                                
-                                if retry == max_retries - 1:
-                                    # Última tentativa: recarrega o modelo
-                                    logger.info("🔄 Última tentativa - recarregando modelo TTS...")
-                                    # ModelCache usa cache em memória; limpa e recarrega.
-                                    try:
-                                        model_cache.clear_memory()
-                                    except Exception:
-                                        pass
-                                    torch.cuda.empty_cache()
-                                    tts = model_cache.get_tts(model_name, device)
-                                    logger.info("✅ Modelo TTS recarregado")
+                                time.sleep(0.5)
+                                recovered = True
                             except Exception as e2:
-                                logger.error(f"❌ Falha ao resetar CUDA: {e2}")
+                                logger.warning(f"⚠️ Contexto CUDA irrecuperável: {e2}")
+                                cuda_broken = True
+                        
+                        if cuda_broken or not recovered:
+                            # Migra para CPU e recarrega o modelo
+                            logger.info("🔄 Migrando para CPU e recarregando modelo TTS...")
+                            device = "cpu"
+                            try:
+                                model_cache.clear_memory()
+                                tts = model_cache.get_tts(model_name, "cpu")
+                                logger.info("✅ Modelo TTS recarregado na CPU")
+                                # Atualiza kwargs para CPU (remove speaker_wav se necessário)
+                                kwargs["file_path"] = part_audio_path
+                            except Exception as e3:
+                                logger.error(f"❌ Falha ao recarregar na CPU: {e3}")
+                                break
+                        elif retry == max_retries - 1:
+                            logger.info("🔄 Última tentativa - recarregando modelo TTS na GPU...")
+                            try:
+                                model_cache.clear_memory()
+                                torch.cuda.empty_cache()
+                                tts = model_cache.get_tts(model_name, device)
+                                logger.info("✅ Modelo TTS recarregado na GPU")
+                            except Exception as e3:
+                                logger.error(f"❌ Falha ao recarregar: {e3}")
                     else:
                         logger.error(f"❌ Erro TTS na frase {i} parte {part_idx}: {e}")
                         break  # Não é erro CUDA, não vale a pena retry
@@ -411,14 +463,19 @@ def dublar_frases(frases_pt_json, vocals_path, saida_dir, use_multi_voice=False)
             logger.warning(f"⚠️ Frase {i} falhou após {max_retries} tentativas")
     
     # Limpeza final
-    if device == "cuda":
-        torch.cuda.empty_cache()
-        logger.debug("🧹 VRAM final limpa")
+    if device == "cuda" and not cuda_broken:
+        try:
+            torch.cuda.empty_cache()
+            logger.debug("🧹 VRAM final limpa")
+        except Exception:
+            pass
     
     log_progress(logger, 85.0)
     
     # Atualiza frases_pt.json com tts_dur
     save_json(frases, frases_pt_json)
+    copy_artifact(frases_pt_json, "frases_pt.json")
+    mark_step("tts", "done", total=total_frases)
     
     logger.info("✅ Dublagem concluída. Durações registradas.")
 
@@ -457,6 +514,7 @@ if __name__ == "__main__":
             logger.warning("⚠️ Sem vocals.wav: dublagem sem clonagem.")
     else:
         logger.info(f"🎤 Usando referência: {vocals}")
+    vocals = criar_referencia_voz_limpa(vocals)
     
     # Verifica se deve usar multi-voice
     use_multi_voice = config.get("app.use_multi_voice", False)
@@ -479,7 +537,9 @@ if __name__ == "__main__":
     dublar_frases(frases_pt, vocals, saida_audios, use_multi_voice=use_multi_voice)
     
     logger.info("🔄 Sincronizando e juntando...")
+    mark_step("sync", "running")
     ret = subprocess.run([sys.executable, "sincronizar_e_juntar.py"], encoding='utf-8', errors='replace')
     if ret.returncode != 0:
+        mark_step("sync", "error", code=ret.returncode)
         logger.error(f"❌ sincronizar_e_juntar.py retornou código {ret.returncode}")
         sys.exit(ret.returncode)

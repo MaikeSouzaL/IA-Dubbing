@@ -4,8 +4,10 @@ import threading
 import subprocess
 import queue
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
+import shutil
 
 from pathlib import Path
 
@@ -18,6 +20,7 @@ except ImportError:
 
 from config_loader import config
 from logger import setup_logger
+from env_utils import save_env_value
 
 logger = setup_logger("gui")
 
@@ -44,6 +47,85 @@ class DubbingApp:
         
         # Novas variáveis para funcionalidades
         self.keep_cut_videos = ctk.BooleanVar(value=config.get("app.keep_cut_videos", False))
+        self.offline_mode = ctk.BooleanVar(value=config.get("app.offline_mode", False))
+        self.transcription_model_options = {
+            "local_whisper": ["tiny", "base", "small", "medium", "large"],
+            "openai": ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
+            "deepgram": ["nova-3", "nova-2", "enhanced", "base"],
+            "assemblyai": ["universal-3-pro", "universal-2"],
+            "google": ["latest_long", "latest_short", "video", "phone_call", "default"],
+        }
+        self.transcription_key_links = {
+            "openai": "https://platform.openai.com/api-keys",
+            "deepgram": "https://console.deepgram.com/project/keys",
+            "assemblyai": "https://www.assemblyai.com/dashboard/api-keys",
+            "google": "https://console.cloud.google.com/apis/credentials",
+        }
+        self.transcription_env_keys = {
+            "openai": "OPENAI_API_KEY",
+            "deepgram": "DEEPGRAM_API_KEY",
+            "assemblyai": "ASSEMBLYAI_API_KEY",
+            "google": "GOOGLE_API_KEY",
+        }
+        self.transcription_key_help = {
+            "local_whisper": (
+                "Whisper local nao precisa de chave API.\n\n"
+                "1. Selecione local_whisper em Transcricao.\n"
+                "2. Escolha o modelo em Modelo.\n"
+                "3. Quanto maior o modelo, melhor tende a ser a precisao, mas mais VRAM/RAM e tempo ele usa.\n"
+                "4. Clique em Iniciar Dublagem."
+            ),
+            "openai": (
+                "OpenAI - como configurar\n\n"
+                "1. Clique em Pegar chave openai.\n"
+                "2. Entre na sua conta OpenAI.\n"
+                "3. Crie uma nova API key.\n"
+                "4. Cole a chave no campo Chave API.\n"
+                "5. Clique em Buscar modelos.\n"
+                "6. Escolha um modelo de transcricao, como whisper-1.\n"
+                "7. Inicie a dublagem.\n\n"
+                "Opcional: em vez de colar aqui, defina OPENAI_API_KEY no Windows."
+            ),
+            "deepgram": (
+                "Deepgram - como configurar\n\n"
+                "1. Clique em Pegar chave deepgram.\n"
+                "2. Crie ou abra um projeto no console da Deepgram.\n"
+                "3. Abra a area de API Keys.\n"
+                "4. Crie/copiei uma chave com permissao de uso da API.\n"
+                "5. Cole a chave no campo Chave API.\n"
+                "6. Clique em Buscar modelos.\n"
+                "7. Escolha um modelo STT, como nova-3.\n"
+                "8. Inicie a dublagem.\n\n"
+                "Opcional: defina DEEPGRAM_API_KEY no Windows."
+            ),
+            "assemblyai": (
+                "AssemblyAI - como configurar\n\n"
+                "1. Clique em Pegar chave assemblyai.\n"
+                "2. Entre no dashboard da AssemblyAI.\n"
+                "3. Copie sua API key.\n"
+                "4. Cole a chave no campo Chave API.\n"
+                "5. Escolha universal-3-pro ou universal-2.\n"
+                "6. Inicie a dublagem.\n\n"
+                "Opcional: defina ASSEMBLYAI_API_KEY no Windows."
+            ),
+            "google": (
+                "Google Cloud Speech-to-Text - como configurar\n\n"
+                "1. Clique em Pegar chave google.\n"
+                "2. No Google Cloud Console, crie ou selecione um projeto.\n"
+                "3. Ative a API Speech-to-Text.\n"
+                "4. Ative billing no projeto, se solicitado pelo Google.\n"
+                "5. Va em APIs e servicos > Credenciais.\n"
+                "6. Crie uma API key.\n"
+                "7. Cole a chave no campo Chave API.\n"
+                "8. Escolha latest_long para videos/audios longos.\n"
+                "9. Inicie a dublagem.\n\n"
+                "Opcional: defina GOOGLE_API_KEY no Windows."
+            ),
+        }
+        for provider_name in list(self.transcription_model_options.keys()):
+            saved_models = config.get(f"transcription.{provider_name}.available_models", None)
+            if saved_models:
+                self.transcription_model_options[provider_name] = saved_models
         self.selected_videos_to_merge = []  # Lista de vídeos selecionados para merge
         
         # Fila para comunicação thread-safe com a GUI
@@ -102,12 +184,99 @@ class DubbingApp:
         grid_frame.pack(fill="x", padx=15, pady=5)
         
         # Linha 1
-        ctk.CTkLabel(grid_frame, text="Modelo Whisper:").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=10)
+        self.label_whisper_model = ctk.CTkLabel(grid_frame, text="Modelo Whisper:")
+        self.label_whisper_model.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=10)
         self.whisper_model = ctk.StringVar(value=config.get("models.whisper.size", "medium"))
         models = ["tiny", "base", "small", "medium", "large"]
-        ctk.CTkComboBox(grid_frame, variable=self.whisper_model, values=models, width=140).grid(row=0, column=1, sticky="w", padx=0, pady=10)
+        self.combo_whisper_model = ctk.CTkComboBox(
+            grid_frame,
+            variable=self.whisper_model,
+            values=models,
+            width=140,
+            command=lambda value: self.transcription_model.set(value) if self.transcription_provider.get() == "local_whisper" else None,
+        )
+        self.combo_whisper_model.grid(row=0, column=1, sticky="w", padx=0, pady=10)
+
+        ctk.CTkLabel(grid_frame, text="Transcricao:").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=10)
+        self.transcription_provider = ctk.StringVar(value=config.get("transcription.provider", "local_whisper"))
+        providers = ["local_whisper", "openai", "deepgram", "assemblyai", "google"]
+        self.combo_transcription_provider = ctk.CTkComboBox(
+            grid_frame,
+            variable=self.transcription_provider,
+            values=providers,
+            width=150,
+            command=lambda _value: self.on_transcription_provider_changed(),
+        )
+        self.combo_transcription_provider.grid(row=4, column=1, sticky="w", padx=0, pady=10)
+
+        ctk.CTkLabel(grid_frame, text="Modelo:").grid(row=4, column=2, sticky="w", padx=(30, 10), pady=10)
+        self.transcription_model = ctk.StringVar(value=self.get_current_transcription_model())
+        self.combo_transcription_model = ctk.CTkComboBox(
+            grid_frame,
+            variable=self.transcription_model,
+            values=self.transcription_model_options.get(self.transcription_provider.get(), models),
+            width=180,
+            command=lambda value: self.on_transcription_model_changed(value),
+        )
+        self.combo_transcription_model.grid(row=4, column=3, sticky="w", padx=0, pady=10)
+
+        self.btn_fetch_models = ctk.CTkButton(
+            grid_frame,
+            text="Buscar modelos",
+            width=130,
+            command=self.fetch_transcription_models,
+        )
+        self.btn_fetch_models.grid(row=4, column=4, sticky="w", padx=(15, 0), pady=10)
+
+        ctk.CTkLabel(grid_frame, text="Chave API:").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=10)
+        self.transcription_api_key = ctk.StringVar(value=self.get_current_transcription_api_key())
+        self.entry_transcription_api_key = ctk.CTkEntry(
+            grid_frame,
+            textvariable=self.transcription_api_key,
+            width=380,
+            show="*",
+            placeholder_text="Opcional se ja estiver em variavel de ambiente",
+        )
+        self.entry_transcription_api_key.grid(row=5, column=1, columnspan=3, sticky="we", padx=0, pady=10)
+        self.entry_transcription_api_key.bind("<FocusOut>", lambda _event: self.save_transcription_settings())
+        self.link_transcription_api_key = ctk.CTkLabel(
+            grid_frame,
+            text="Abrir pagina da chave",
+            text_color="#3b8ed0",
+            cursor="hand2",
+        )
+        self.link_transcription_api_key.grid(row=5, column=4, sticky="w", padx=(15, 0), pady=10)
+        self.link_transcription_api_key.bind("<Button-1>", lambda _event: self.open_transcription_key_page())
+
+        self.btn_transcription_help = ctk.CTkButton(
+            grid_frame,
+            text="Como configurar",
+            width=130,
+            command=self.show_transcription_key_help,
+        )
+        self.btn_transcription_help.grid(row=6, column=1, sticky="w", padx=0, pady=(0, 10))
+
+        self.btn_save_transcription = ctk.CTkButton(
+            grid_frame,
+            text="Salvar",
+            width=100,
+            fg_color="#28a745",
+            hover_color="#218838",
+            command=self.save_transcription_settings_clicked,
+        )
+        self.btn_save_transcription.grid(row=6, column=2, sticky="w", padx=(15, 0), pady=(0, 10))
+        self.btn_test_transcription_api = ctk.CTkButton(
+            grid_frame,
+            text="Testar API",
+            width=110,
+            command=self.test_transcription_api,
+        )
+        self.btn_test_transcription_api.grid(row=6, column=3, sticky="w", padx=(15, 0), pady=(0, 10))
+        self.update_transcription_provider_fields()
+        self.label_whisper_model.grid_remove()
+        self.combo_whisper_model.grid_remove()
         
-        ctk.CTkLabel(grid_frame, text="Idioma Destino:").grid(row=0, column=2, sticky="w", padx=(30, 10), pady=10)
+        ctk.CTkLabel(grid_frame, text="Idioma Destino:").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=10)
         self.target_lang = ctk.StringVar(value=config.get("translation.target_language", "pt"))
         
         langs = [
@@ -120,10 +289,16 @@ class DubbingApp:
         ]
         lang_codes = [lang[0] for lang in langs]
         
-        ctk.CTkComboBox(grid_frame, variable=self.target_lang, values=lang_codes, width=100).grid(row=0, column=3, sticky="w", padx=0, pady=10)
+        ctk.CTkComboBox(grid_frame, variable=self.target_lang, values=lang_codes, width=100).grid(row=0, column=1, sticky="w", padx=0, pady=10)
         
         self.clean_after = ctk.BooleanVar(value=config.get("app.clean_after_completion", True))
-        ctk.CTkCheckBox(grid_frame, text="Limpar temporários", variable=self.clean_after).grid(row=0, column=4, sticky="w", padx=(30, 0), pady=10)
+        ctk.CTkCheckBox(grid_frame, text="Limpar temporários", variable=self.clean_after).grid(row=0, column=2, sticky="w", padx=(30, 0), pady=10)
+        ctk.CTkCheckBox(
+            grid_frame,
+            text="Modo offline",
+            variable=self.offline_mode,
+            command=self.on_offline_mode_changed,
+        ).grid(row=0, column=3, sticky="w", padx=(30, 0), pady=10)
         
         # Linha 2 - Legendas
         ctk.CTkLabel(grid_frame, text="Legendas (.srt):").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=10)
@@ -173,6 +348,9 @@ class DubbingApp:
         ctk.CTkLabel(merge_inner, text="Selecione os vídeos na ordem desejada:").pack(side="left", padx=(0, 15))
         ctk.CTkButton(merge_inner, text="📁 Selecionar", command=self.select_videos_to_merge, width=120).pack(side="left", padx=5)
         ctk.CTkButton(merge_inner, text="🔗 Juntar", command=self.merge_selected_videos, fg_color="#28a745", hover_color="#218838", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(merge_inner, text="Abrir pasta", command=self.open_output_folder, width=110).pack(side="left", padx=5)
+        ctk.CTkButton(merge_inner, text="Checar dependencias", command=self.check_dependencies, width=150).pack(side="left", padx=5)
+        ctk.CTkButton(merge_inner, text="Atualizar yt-dlp", command=self.update_ytdlp, width=130).pack(side="left", padx=5)
         
         self.merge_status_label = ctk.CTkLabel(merge_inner, text="Nenhum vídeo selecionado.", text_color="gray")
         self.merge_status_label.pack(side="left", padx=(15, 0))
@@ -222,9 +400,214 @@ class DubbingApp:
 
         self.btn_start = ctk.CTkButton(btn_frame, text="▶️ Iniciar Dublagem", font=ctk.CTkFont(size=14, weight="bold"), height=40, command=self.start_process)
         self.btn_start.pack(side="left", padx=5)
+
+        self.btn_resume = ctk.CTkButton(btn_frame, text="⏩ Continuar Dublagem", font=ctk.CTkFont(size=14, weight="bold"), fg_color="#5a6fd6", hover_color="#4a5fc6", height=40, command=self.resume_process)
+        self.btn_resume.pack(side="left", padx=5)
         
         self.btn_stop = ctk.CTkButton(btn_frame, text="⏹️ Parar", font=ctk.CTkFont(size=14, weight="bold"), fg_color="#d9534f", hover_color="#c9302c", height=40, state="disabled", command=self.stop_process)
         self.btn_stop.pack(side="left", padx=5)
+
+    def get_current_transcription_model(self):
+        provider = self.transcription_provider.get() if hasattr(self, "transcription_provider") else config.get("transcription.provider", "local_whisper")
+        if provider == "local_whisper":
+            return config.get("models.whisper.size", "medium")
+        return config.get(f"transcription.{provider}.model", (self.transcription_model_options.get(provider) or [""])[0])
+
+    def get_current_transcription_api_key(self):
+        provider = self.transcription_provider.get() if hasattr(self, "transcription_provider") else config.get("transcription.provider", "local_whisper")
+        if provider == "local_whisper":
+            return ""
+        return config.get(f"transcription.{provider}.api_key", "")
+
+    def update_transcription_provider_fields(self):
+        if not hasattr(self, "combo_transcription_model"):
+            return
+        provider = self.transcription_provider.get()
+        models = self.transcription_model_options.get(provider, [])
+        current_model = config.get(f"transcription.{provider}.model", None) if provider != "local_whisper" else config.get("models.whisper.size", "medium")
+        if current_model not in models and models:
+            current_model = models[0]
+        self.transcription_model.set(current_model or "")
+        self.combo_transcription_model.configure(values=models, state="normal")
+
+        if provider == "local_whisper":
+            self.transcription_api_key.set("")
+            self.entry_transcription_api_key.configure(state="disabled", placeholder_text="Whisper local nao usa chave API")
+            self.link_transcription_api_key.configure(text="Whisper local nao usa chave", text_color="gray")
+            self.btn_transcription_help.configure(text="Sobre o Whisper")
+            self.whisper_model.set(self.transcription_model.get())
+        else:
+            self.transcription_api_key.set(config.get(f"transcription.{provider}.api_key", ""))
+            self.entry_transcription_api_key.configure(state="normal", placeholder_text="Cole a chave API ou use variavel de ambiente")
+            self.link_transcription_api_key.configure(text=f"Pegar chave {provider}", text_color="#3b8ed0")
+            self.btn_transcription_help.configure(text="Como configurar")
+
+    def on_transcription_provider_changed(self):
+        self.update_transcription_provider_fields()
+        self.save_transcription_settings()
+
+    def on_transcription_model_changed(self, value):
+        if self.transcription_provider.get() == "local_whisper":
+            self.whisper_model.set(value)
+        self.save_transcription_settings()
+
+    def save_transcription_settings(self):
+        if not hasattr(self, "transcription_provider") or not hasattr(self, "transcription_model"):
+            return
+        if "models" not in config._config:
+            config._config["models"] = {}
+        if "whisper" not in config._config["models"]:
+            config._config["models"]["whisper"] = {}
+        if "transcription" not in config._config:
+            config._config["transcription"] = {}
+        for provider_name in ["openai", "deepgram", "assemblyai", "google"]:
+            if provider_name not in config._config["transcription"]:
+                config._config["transcription"][provider_name] = {}
+
+        provider = self.transcription_provider.get()
+        model = self.transcription_model.get().strip()
+        config._config["transcription"]["provider"] = provider
+        if provider == "local_whisper":
+            config._config["models"]["whisper"]["size"] = model or self.whisper_model.get()
+            self.whisper_model.set(config._config["models"]["whisper"]["size"])
+        else:
+            config._config["transcription"][provider]["model"] = model
+            api_key = self.transcription_api_key.get().strip()
+            env_key = self.transcription_env_keys.get(provider)
+            if env_key:
+                save_env_value(env_key, api_key)
+            config._config["transcription"][provider]["api_key"] = ""
+        config.save()
+
+    def save_transcription_settings_clicked(self):
+        self.save_transcription_settings()
+        provider = self.transcription_provider.get()
+        model = self.transcription_model.get()
+        self.log(f"Configuracao de transcricao salva: {provider} / {model}", "SUCCESS")
+
+    def on_offline_mode_changed(self):
+        if "app" not in config._config:
+            config._config["app"] = {}
+        config._config["app"]["offline_mode"] = self.offline_mode.get()
+        if self.offline_mode.get() and self.transcription_provider.get() != "local_whisper":
+            self.transcription_provider.set("local_whisper")
+            self.update_transcription_provider_fields()
+            self.save_transcription_settings()
+            self.log("Modo offline ativado: transcricao alterada para local_whisper.", "WARNING")
+        config.save()
+
+    def open_transcription_key_page(self):
+        provider = self.transcription_provider.get()
+        url = self.transcription_key_links.get(provider)
+        if not url:
+            return
+        webbrowser.open(url)
+
+    def show_transcription_key_help(self):
+        provider = self.transcription_provider.get()
+        help_text = self.transcription_key_help.get(provider, "Nenhum passo a passo disponivel para este provedor.")
+        window = ctk.CTkToplevel(self.root)
+        window.title(f"Como configurar {provider}")
+        window.geometry("620x520")
+        window.transient(self.root)
+        window.grab_set()
+
+        frame = ctk.CTkFrame(window)
+        frame.pack(fill="both", expand=True, padx=16, pady=16)
+
+        title = ctk.CTkLabel(
+            frame,
+            text=f"Configurar {provider}",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        )
+        title.pack(anchor="w", padx=12, pady=(12, 8))
+
+        text = ctk.CTkTextbox(frame, wrap="word", height=360)
+        text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        text.insert("1.0", help_text)
+        text.configure(state="disabled")
+
+        button_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        button_frame.pack(fill="x", padx=12, pady=(0, 12))
+        if provider in self.transcription_key_links:
+            ctk.CTkButton(
+                button_frame,
+                text="Abrir pagina da chave",
+                command=self.open_transcription_key_page,
+                width=160,
+            ).pack(side="left")
+        ctk.CTkButton(button_frame, text="Fechar", command=window.destroy, width=100).pack(side="right")
+
+    def fetch_transcription_models(self):
+        provider = self.transcription_provider.get()
+        api_key = self.transcription_api_key.get().strip() if hasattr(self, "transcription_api_key") else ""
+        self.btn_fetch_models.configure(state="disabled", text="Buscando...")
+        self.log(f"Buscando modelos disponiveis para {provider}...", "INFO")
+
+        thread = threading.Thread(target=self._fetch_transcription_models_worker, args=(provider, api_key))
+        thread.daemon = True
+        thread.start()
+
+    def test_transcription_api(self):
+        provider = self.transcription_provider.get()
+        if provider == "local_whisper":
+            messagebox.showinfo("Teste", "Whisper local nao usa API. Basta os modelos locais estarem no cache.")
+            return
+        self.save_transcription_settings()
+        self.btn_test_transcription_api.configure(state="disabled", text="Testando...")
+        thread = threading.Thread(target=self._test_transcription_api_worker, args=(provider,))
+        thread.daemon = True
+        thread.start()
+
+    def _test_transcription_api_worker(self, provider):
+        try:
+            from transcription_providers import list_available_models
+            models = list_available_models(provider, api_key=self.transcription_api_key.get().strip() or None)
+            self.root.after(0, lambda: self._finish_test_transcription_api(provider, True, f"Conexao OK. {len(models)} modelo(s) disponiveis."))
+        except Exception as e:
+            self.root.after(0, lambda: self._finish_test_transcription_api(provider, False, str(e)))
+
+    def _finish_test_transcription_api(self, provider, ok, message):
+        self.btn_test_transcription_api.configure(state="normal", text="Testar API")
+        if ok:
+            self.log(f"API {provider} testada com sucesso: {message}", "SUCCESS")
+            messagebox.showinfo("Teste de API", message)
+        else:
+            self.log(f"Falha no teste da API {provider}: {message}", "ERROR")
+            messagebox.showerror("Teste de API", message)
+
+    def _fetch_transcription_models_worker(self, provider, api_key):
+        try:
+            from transcription_providers import list_available_models
+            models = list_available_models(provider, api_key=api_key or None)
+            self.root.after(0, lambda: self._apply_fetched_transcription_models(provider, models))
+        except Exception as e:
+            self.root.after(0, lambda: self._finish_fetch_transcription_models_error(str(e)))
+
+    def _apply_fetched_transcription_models(self, provider, models):
+        models = [m for m in models if m]
+        if not models:
+            self._finish_fetch_transcription_models_error("Nenhum modelo encontrado.")
+            return
+        current = self.transcription_model.get()
+        self.transcription_model_options[provider] = models
+        self.combo_transcription_model.configure(values=models)
+        self.transcription_model.set(current if current in models else models[0])
+        if "transcription" not in config._config:
+            config._config["transcription"] = {}
+        if provider not in config._config["transcription"]:
+            config._config["transcription"][provider] = {}
+        config._config["transcription"][provider]["available_models"] = models
+        config.save()
+        if provider == "local_whisper":
+            self.whisper_model.set(self.transcription_model.get())
+        self.btn_fetch_models.configure(state="normal", text="Buscar modelos")
+        self.log(f"{len(models)} modelo(s) encontrados para {provider}.", "SUCCESS")
+
+    def _finish_fetch_transcription_models_error(self, error):
+        self.btn_fetch_models.configure(state="normal", text="Buscar modelos")
+        self.log(f"Falha ao buscar modelos: {error}", "ERROR")
+        messagebox.showwarning("Modelos", f"Nao foi possivel buscar modelos automaticamente.\n\n{error}")
 
     def toggle_multi_voice(self):
         if self.use_multi_voice.get():
@@ -250,6 +633,114 @@ class DubbingApp:
             self.selected_videos_to_merge = list(files)
             self.merge_status_label.configure(text=f"{len(self.selected_videos_to_merge)} vídeo(s) selecionado(s)", text_color=("black", "white"))
             self.log(f"📁 {len(self.selected_videos_to_merge)} vídeo(s) selecionado(s) para juntar", "INFO")
+
+    def open_output_folder(self):
+        try:
+            from job_manager import load_current_job
+            state = load_current_job()
+            path = state.get("job_dir") if state else os.getcwd()
+        except Exception:
+            path = os.getcwd()
+        if not os.path.isdir(path):
+            path = os.getcwd()
+        os.startfile(path)
+
+    def check_dependencies(self):
+        checks = {
+            "ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffprobe": shutil.which("ffprobe") is not None,
+            "demucs": shutil.which("demucs") is not None,
+            "yt-dlp": shutil.which("yt-dlp") is not None,
+            "node": shutil.which("node") is not None,
+            "deno": shutil.which("deno") is not None,
+        }
+        missing = [name for name, ok in checks.items() if not ok]
+        for name, ok in checks.items():
+            self.log(f"Dependencia {name}: {'OK' if ok else 'faltando'}", "SUCCESS" if ok else "WARNING")
+        
+        if missing:
+            if "deno" in missing:
+                resposta = messagebox.askyesno(
+                    "Dependências faltando",
+                    f"Faltam as seguintes dependências: {', '.join(missing)}\n\nDeseja instalar o Deno automaticamente pelo PowerShell agora?"
+                )
+                if resposta:
+                    self.install_deno_automatically()
+            else:
+                messagebox.showwarning("Dependencias", "Faltando: " + ", ".join(missing))
+        else:
+            messagebox.showinfo("Dependencias", "Todas as dependencias principais foram encontradas.")
+
+    def install_deno_automatically(self):
+        self.log("Iniciando instalação do Deno via PowerShell...", "INFO")
+        def worker():
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://deno.land/install.ps1 | iex"],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    self.log("Deno instalado com sucesso! Reinicie o app para aplicar o PATH.", "SUCCESS")
+                    self.root.after(0, lambda: messagebox.showinfo("Deno Instalado", "Deno instalado com sucesso!\n\nFeche e abra novamente essa ferramenta para que o sistema reconheça a instalação (PATH)."))
+                else:
+                    self.log(f"Falha ao instalar o Deno: {result.stderr}", "ERROR")
+                    self.root.after(0, lambda: messagebox.showerror("Erro", "Falha ao instalar o Deno automaticamente.\nVerifique os logs."))
+            except Exception as e:
+                self.log(f"Erro na instalação automática: {e}", "ERROR")
+                self.root.after(0, lambda: messagebox.showerror("Erro", f"Exceção ao instalar o Deno:\n{e}"))
+
+        thread = threading.Thread(target=worker)
+        thread.daemon = True
+        thread.start()
+
+    def update_ytdlp(self):
+        if self.offline_mode.get():
+            messagebox.showwarning("Modo offline", "Nao e possivel atualizar yt-dlp no modo offline.")
+            return
+        thread = threading.Thread(target=self._update_ytdlp_worker)
+        thread.daemon = True
+        thread.start()
+
+    def _update_ytdlp_worker(self):
+        self.log("Atualizando yt-dlp...", "INFO")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode == 0:
+                self.log("yt-dlp atualizado com sucesso.", "SUCCESS")
+            else:
+                self.log(f"Falha ao atualizar yt-dlp: {result.stderr[-800:]}", "ERROR")
+        except Exception as e:
+            self.log(f"Erro ao atualizar yt-dlp: {e}", "ERROR")
+
+    def estimate_api_cost_message(self, target):
+        provider = self.transcription_provider.get()
+        rates = {
+            "openai": "depende do modelo; confira a pagina de precos da OpenAI",
+            "deepgram": "depende do plano/modelo; confira a pagina de precos da Deepgram",
+            "assemblyai": "depende do modelo; confira a pagina de precos da AssemblyAI",
+            "google": "depende da duracao e modelo; confira os precos do Google Cloud Speech-to-Text",
+        }
+        duration_text = "duracao desconhecida"
+        if self.input_mode.get() == "file" and os.path.isfile(target):
+            try:
+                from long_video.utils import ffprobe_duration
+                seconds = ffprobe_duration(target)
+                if seconds:
+                    duration_text = f"{seconds/60:.1f} minutos"
+            except Exception:
+                pass
+        return (
+            f"Voce selecionou transcricao externa: {provider}.\n"
+            f"Estimativa: {duration_text}.\n"
+            f"Custo: {rates.get(provider, 'verifique o provedor')}.\n"
+            "Se a API falhar, o sistema tenta fallback com Whisper local."
+        )
     
     def merge_selected_videos(self):
         if not self.selected_videos_to_merge or len(self.selected_videos_to_merge) < 2:
@@ -483,6 +974,9 @@ class DubbingApp:
             
         mode = self.input_mode.get()
         target = ""
+        if self.offline_mode.get() and mode == "url":
+            messagebox.showerror("Modo offline", "No modo offline, use um arquivo local. URLs do YouTube precisam de internet.")
+            return
         if mode == "file":
             target = self.video_path.get()
             if not target or not os.path.exists(target):
@@ -495,16 +989,40 @@ class DubbingApp:
                 return
 
         # Assegura que as chaves existam mesmo se config.yaml não existir
+        provider = self.transcription_provider.get()
+        if provider != "local_whisper" and not is_preview:
+            estimate = self.estimate_api_cost_message(target)
+            if estimate and not messagebox.askyesno("Estimativa de API", estimate + "\n\nDeseja continuar?"):
+                return
+
         if "translation" not in config._config: config._config["translation"] = {}
         if "models" not in config._config: config._config["models"] = {}
         if "whisper" not in config._config["models"]: config._config["models"]["whisper"] = {}
         if "app" not in config._config: config._config["app"] = {}
+        if "transcription" not in config._config: config._config["transcription"] = {}
+        for provider_name in ["openai", "deepgram", "assemblyai", "google"]:
+            if provider_name not in config._config["transcription"]:
+                config._config["transcription"][provider_name] = {}
 
+        selected_provider = self.transcription_provider.get()
+        selected_model = self.transcription_model.get().strip()
         config._config["translation"]["target_language"] = self.target_lang.get()
-        config._config["models"]["whisper"]["size"] = self.whisper_model.get()
+        if selected_provider == "local_whisper":
+            config._config["models"]["whisper"]["size"] = selected_model or self.whisper_model.get()
+            self.whisper_model.set(config._config["models"]["whisper"]["size"])
+        else:
+            config._config["models"]["whisper"]["size"] = self.whisper_model.get()
+            config._config["transcription"][selected_provider]["model"] = selected_model
+            api_key = self.transcription_api_key.get().strip()
+            env_key = self.transcription_env_keys.get(selected_provider)
+            if env_key:
+                save_env_value(env_key, api_key)
+            config._config["transcription"][selected_provider]["api_key"] = ""
+        config._config["transcription"]["provider"] = selected_provider
         config._config["app"]["generate_subtitles"] = self.generate_subtitles.get()
         config._config["app"]["subtitle_original"] = self.subtitle_original.get()
         config._config["app"]["subtitle_translated"] = self.subtitle_translated.get()
+        config._config["app"]["offline_mode"] = self.offline_mode.get()
         config._config["app"]["clean_after_completion"] = self.clean_after.get()
         config._config["app"]["keep_cut_videos"] = self.keep_cut_videos.get()
         config._config["app"]["use_multi_voice"] = self.use_multi_voice.get()
@@ -514,6 +1032,8 @@ class DubbingApp:
             config._config["app"]["expected_speakers"] = 2
         
         config.save()
+        self.log(f"Modelo de transcricao: {self.transcription_model.get()}", "INFO")
+        self.log(f"Motor de transcricao: {self.transcription_provider.get()}", "INFO")
         self.log(f"🌍 Idioma de destino: {self.target_lang.get()}", "INFO")
 
         self.is_running = True
@@ -541,7 +1061,249 @@ class DubbingApp:
             
         if messagebox.askyesno("Confirmar", "Deseja realmente parar o processo?"):
             self.log("🛑 Parando processo...", "WARNING")
-            self.is_running = False 
+            self.is_running = False
+            proc = getattr(self, "_running_process", None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, text=True)
+                    self.log("Processo e subprocessos encerrados.", "WARNING")
+                except Exception as e:
+                    self.log(f"Falha ao encerrar subprocessos: {e}", "ERROR")
+
+    def resume_process(self):
+        """Continua a dublagem de onde parou (pula transcrição/tradução, só TTS + sync)."""
+        if self.is_running:
+            return
+
+        # Verifica pré-requisitos
+        if not os.path.isfile("frases_pt.json"):
+            messagebox.showerror(
+                "Arquivo não encontrado",
+                "Não foi encontrado 'frases_pt.json'.\n"
+                "Execute a dublagem completa primeiro para gerar a transcrição."
+            )
+            return
+
+        # Conta frases já prontas vs total
+        audios_dir = "audios_frases_pt"
+        done = 0
+        total = 0
+        try:
+            import json
+            with open("frases_pt.json", "r", encoding="utf-8") as f:
+                frases = json.load(f)
+            total = len(frases)
+            if os.path.isdir(audios_dir):
+                done = len([x for x in os.listdir(audios_dir) if x.startswith("frase_") and x.endswith(".wav")])
+        except Exception:
+            pass
+
+        if done >= total and total > 0:
+            # Todas as frases já foram geradas — vai direto para sincronização
+            msg = (
+                f"Todas as {total} frases já foram geradas!\n\n"
+                "Deseja executar apenas a sincronização e finalização do vídeo?"
+            )
+        else:
+            msg = (
+                f"Continuar dublagem de onde parou?\n\n"
+                f"• Frases prontas: {done}/{total}\n"
+                f"• Frases restantes: {max(0, total - done)}\n\n"
+                "As frases já geradas serão puladas automaticamente."
+            )
+
+        if not messagebox.askyesno("Continuar Dublagem", msg):
+            return
+
+        self.is_running = True
+        self.btn_start.configure(state="disabled")
+        self.btn_preview.configure(state="disabled")
+        self.btn_resume.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self.progress_bar_widget.set(0)
+        self.progress_var.set(0.0)
+        self.log_textbox.delete(1.0, "end")
+        self._console_reset()
+        self.stage_var.set("Continuando dublagem...")
+
+        thread = threading.Thread(target=self.run_resume_pipeline)
+        thread.daemon = True
+        thread.start()
+
+    def run_resume_pipeline(self):
+        """Executa apenas dublar_frases_pt.py + sincronizar_e_juntar.py."""
+        try:
+            self.log("⏩ Retomando pipeline: TTS + Sincronização...", "SUCCESS")
+
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["COQUI_TOS_ALLOW_PROMPT"] = "1"
+
+            # Etapa 1: Dublar frases (pula as que já existem)
+            self.log("🎤 Etapa: Dublando frases restantes...", "INFO")
+            self.stage_var.set("Etapa 4/5: Dublando com IA...")
+
+            process = subprocess.Popen(
+                [sys.executable, "dublar_frases_pt.py"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                env=env,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self._running_process = process
+
+            for line in process.stdout:
+                if not self.is_running:
+                    process.terminate()
+                    break
+                line = line.strip()
+                if line:
+                    self.log(line)
+
+            process.wait()
+            self._running_process = None
+
+            if not self.is_running:
+                self.log("⚠️ Processo interrompido pelo usuário.", "WARNING")
+                return
+
+            if process.returncode != 0:
+                self.log(f"❌ dublar_frases_pt.py encerrou com erro (código {process.returncode}).", "ERROR")
+                return
+
+            self.log("✅ Dublagem concluída!", "SUCCESS")
+
+        except Exception as e:
+            self.log(f"❌ Erro crítico ao retomar: {str(e)}", "ERROR")
+            import traceback
+            self.log(traceback.format_exc(), "ERROR")
+        finally:
+            self._running_process = None
+            self.cleanup_ui()
+
+    def resume_process(self):
+        """Continua automaticamente da etapa mais segura encontrada."""
+        if self.is_running:
+            return
+
+        try:
+            from job_manager import infer_resume_step
+            resume_step = infer_resume_step()
+        except Exception:
+            resume_step = "tts" if os.path.isfile("frases_pt.json") else "full"
+
+        if resume_step == "full":
+            messagebox.showerror(
+                "Nada para continuar",
+                "Nao encontrei transcricao.json nem frases_pt.json para retomar.\n"
+                "Inicie uma dublagem completa primeiro."
+            )
+            return
+
+        done = 0
+        total = 0
+        try:
+            import json
+            with open("frases_pt.json", "r", encoding="utf-8") as f:
+                frases = json.load(f)
+            total = len(frases)
+            audios_dir = "audios_frases_pt"
+            if os.path.isdir(audios_dir):
+                done = len([x for x in os.listdir(audios_dir) if x.startswith("frase_") and x.endswith(".wav")])
+        except Exception:
+            pass
+
+        labels = {
+            "translate": "traducao + frases + TTS + sincronizacao",
+            "tts": "TTS + sincronizacao",
+            "sync": "sincronizacao/finalizacao",
+            "render": "renderizacao/finalizacao",
+        }
+        msg = (
+            f"Continuar a partir de: {labels.get(resume_step, resume_step)}?\n\n"
+            f"Frases prontas: {done}/{total}\n"
+            f"Frases restantes: {max(0, total - done)}"
+        )
+        if not messagebox.askyesno("Continuar Dublagem", msg):
+            return
+
+        self.is_running = True
+        self.btn_start.configure(state="disabled")
+        self.btn_preview.configure(state="disabled")
+        self.btn_resume.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self.progress_bar_widget.set(0)
+        self.progress_var.set(0.0)
+        self.log_textbox.delete(1.0, "end")
+        self._console_reset()
+        self.stage_var.set("Continuando dublagem...")
+
+        thread = threading.Thread(target=self.run_resume_pipeline, args=(resume_step,))
+        thread.daemon = True
+        thread.start()
+
+    def run_resume_pipeline(self, resume_step="tts"):
+        """Executa a etapa adequada para retomar."""
+        try:
+            self.log(f"Retomando pipeline a partir de: {resume_step}", "SUCCESS")
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["COQUI_TOS_ALLOW_PROMPT"] = "1"
+
+            if resume_step == "translate":
+                script = "traduzir_para_pt.py"
+                self.stage_var.set("Etapa 2/5: Traduzindo e continuando...")
+            elif resume_step in ("sync", "render"):
+                script = "sincronizar_e_juntar.py"
+                self.stage_var.set("Etapa 5/5: Sincronizando e Renderizando...")
+            else:
+                script = "dublar_frases_pt.py"
+                self.stage_var.set("Etapa 4/5: Dublando com IA...")
+
+            self.log(f"Executando retomada: {script}", "INFO")
+            process = subprocess.Popen(
+                [sys.executable, script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                env=env,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self._running_process = process
+
+            for line in process.stdout:
+                if not self.is_running:
+                    process.terminate()
+                    break
+                line = line.strip()
+                if line:
+                    self.log(line)
+
+            process.wait()
+            self._running_process = None
+            if not self.is_running:
+                self.log("Processo interrompido pelo usuario.", "WARNING")
+                return
+            if process.returncode != 0:
+                self.log(f"{script} encerrou com erro (codigo {process.returncode}).", "ERROR")
+                return
+            self.log("Retomada concluida!", "SUCCESS")
+        except Exception as e:
+            self.log(f"Erro critico ao retomar: {str(e)}", "ERROR")
+            import traceback
+            self.log(traceback.format_exc(), "ERROR")
+        finally:
+            self._running_process = None
+            self.cleanup_ui()
 
     def run_pipeline(self, mode, target, is_preview=False):
         try:
@@ -620,6 +1382,7 @@ class DubbingApp:
     def _reset_buttons(self):
         self.btn_start.configure(state="normal")
         self.btn_preview.configure(state="normal")
+        self.btn_resume.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.status_var.set("Pronto")
         self.stage_var.set("Aguardando início...")
@@ -634,3 +1397,4 @@ if __name__ == "__main__":
         
     app = DubbingApp(root)
     root.mainloop()
+

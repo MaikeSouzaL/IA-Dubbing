@@ -1,0 +1,61 @@
+{
+  "id": "20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7",
+  "job_dir": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7",
+  "input_ref": "https://youtu.be/X5f8O4GSxUQ?si=Qt_Ikg93-3JGQ3M7",
+  "input_mode": "url",
+  "created_at": "2026-04-24T10:10:41",
+  "updated_at": "2026-04-24T10:35:49",
+  "steps": {
+    "download": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:10:43",
+      "path": "D:\\Transcrever_hind\\ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev.mp4"
+    },
+    "demucs": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:10:43",
+      "path": "D:\\Transcrever_hind\\separated\\htdemucs\\ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev\\vocals.wav"
+    },
+    "vad": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:10:45",
+      "chunks": 231
+    },
+    "transcription": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:18:55",
+      "provider": "deepgram"
+    },
+    "translation": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:35:49"
+    },
+    "phrases": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:22:49",
+      "count": 195
+    },
+    "tts": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:34:50",
+      "total": 195
+    },
+    "sync": {
+      "status": "done",
+      "updated_at": "2026-04-24T10:35:47",
+      "output": "D:\\Transcrever_hind\\ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev_dublado.mp4"
+    }
+  },
+  "artifacts": {
+    "input_video": "D:\\Transcrever_hind\\ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev.mp4",
+    "vocals.wav": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\vocals.wav",
+    "chunks_manifest.json": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\chunks_manifest.json",
+    "transcricao.json": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\transcricao.json",
+    "transcription_report.json": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\transcription_report.json",
+    "transcricao_pt.json": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\transcricao_pt.json",
+    "frases_pt.json": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\frases_pt.json",
+    "voz_dublada.wav": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\voz_dublada.wav",
+    "audio_final_mix.wav": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\audio_final_mix.wav",
+    "ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev_dublado.mp4": "D:\\Transcrever_hind\\jobs\\20260424_101041_url_youtu.be_X5f8O4GSxUQ_si_Qt_Ikg93-3JGQ3M7\\ИИ создал клон Mimesis! Claude vs Codex ｜ Unity Game Dev_dublado.mp4"
+  }
+}

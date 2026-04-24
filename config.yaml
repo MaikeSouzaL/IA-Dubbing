@@ -1,9 +1,89 @@
 translation:
   target_language: pt
+  provider: googletranslator
+  preserve_timing_style: true
+  openai_model: gpt-4o-mini
+  retry_attempts: 3
+  retry_delay: 1.0
+  translate_chunks: false
+  offline_strategy: original
 models:
   whisper:
     size: medium
+    device: auto
+    use_fp16: false
+  demucs:
+    model: htdemucs
+  tts:
+    device: auto
+    model_name: tts_models/multilingual/multi-dataset/xtts_v2
+    fallback_model: tts_models/en/vctk/vits
+    max_chars_per_chunk: 250
+    gpu_clear_cache_frequency: 50
+    clean_voice_reference: true
+    voice_reference_seconds: 18
+    voice_reference_threshold_db: -35
+paths:
+  separated_dir: separated
+  cache_dir: cache
+  transcription_cache_dir: cache/transcriptions
+  tts_output_dir: audios_frases_pt
+transcription:
+  provider: deepgram
+  fallback_provider: local_whisper
+  source_language: auto
+  use_full_vocals_audio: true
+  max_full_audio_mb: 200
+  max_full_audio_seconds: 540
+  api_chunk_seconds: 480
+  api_chunk_overlap_seconds: 2.0
+  api_chunk_silence_search_seconds: 25.0
+  api_chunk_silence_threshold_db: -42
+  api_chunk_min_silence_ms: 600
+  word_timestamps: true
+  cache_enabled: true
+  api_timeout_seconds: 900
+  api_retry_attempts: 3
+  api_retry_delay_seconds: 2.0
+  keep_raw_response: false
+  force_local_language_detection: false
+  prompt: ''
+  openai:
+    model: whisper-1
+    api_key: ''
+    url: https://api.openai.com/v1/audio/transcriptions
+  deepgram:
+    model: nova-3
+    api_key: ''
+    detect_language: true
+    diarize: false
+  assemblyai:
+    model: universal-2
+    api_key: ''
+    speaker_labels: false
+    poll_interval: 3.0
+  google:
+    model: latest_long
+    api_key: ''
+    language_code: en-US
+    available_models:
+    - latest_long
+    - latest_short
+    - video
+    - phone_call
+    - default
+audio:
+  vad:
+    aggressiveness: 2
+    sample_rate: 16000
+    min_duration: 0.5
+    max_duration: 15.0
+    frame_ms: 30
+    min_gap_duration_to_transcribe: 2.0
+  segmentation:
+    max_phrase_duration: 10.0
 app:
+  offline_mode: false
   generate_subtitles: false
   subtitle_original: false
   subtitle_translated: false
@@ -11,3 +91,4 @@ app:
   keep_cut_videos: false
   use_multi_voice: false
   expected_speakers: 2
+  max_video_duration_minutes: 30.0
