@@ -13,6 +13,9 @@ __pycache__/
 
 # Arquivos gerados pelo sistema e logs
 logs/
+jobs/
+current_job.json
+transcription_report.json
 *.log
 
 # Caches e arquivos temporários da IA
@@ -24,6 +27,16 @@ TTS/
 *.bin
 
 # Pastas de saída e arquivos gerados pelo processo
+data/inputs/
+data/outputs/
+data/temp/
+data/work/
+data/reports/
+data/jobs/
+data/cache/
+tools/ffmpeg/
+tools/ffmpeg_extract/
+tools/*.zip
 separated/
 audios_frases_pt/
 audios_frases_pt_stretched/

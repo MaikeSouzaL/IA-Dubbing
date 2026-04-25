@@ -1,9 +1,0 @@
-{
-  "chunks": 3,
-  "words": 1637,
-  "covered_seconds": 1102.653,
-  "duration_until_last_chunk": 1098.653,
-  "coverage_ratio": 1.0036408219883803,
-  "gaps_over_500ms": [],
-  "average_confidence": 0.918921785003054
-}
