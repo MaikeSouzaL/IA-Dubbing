@@ -8,7 +8,7 @@ from config_loader import config
 from logger import setup_logger, log_progress
 from utils import load_json, save_json
 from job_manager import copy_artifact, mark_step
-from project_paths import pipeline_file, work_file
+from project_paths import ROOT, pipeline_file, work_file
 
 logger = setup_logger(__name__)
 
@@ -85,7 +85,7 @@ for idx, chunk in enumerate(data, 1):
 
 log_progress(logger, 30.0)
 save_json(data_pt, OUT_ARQ)
-copy_artifact(OUT_ARQ, OUT_ARQ)
+copy_artifact(OUT_ARQ, OUT_ARQ.name)
 logger.info(f"✅ Tradução salva em {OUT_ARQ}")
 
 if not data_pt or all(not c.get("transcript_pt") for c in data_pt):

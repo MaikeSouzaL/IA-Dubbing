@@ -2,10 +2,15 @@ import os
 import pickle
 import shutil
 import sys
+import warnings
 import torch
 from pathlib import Path
 from typing import Any, Optional
 import whisper
+
+from project_paths import ROOT
+
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API.*")
 
 _NVIDIA_DLL_HANDLES = []
 
@@ -45,7 +50,6 @@ except ImportError:
 from logger import setup_logger
 from config_loader import config
 from utils import ensure_dir
-from project_paths import ROOT
 
 logger = setup_logger("model_cache")
 

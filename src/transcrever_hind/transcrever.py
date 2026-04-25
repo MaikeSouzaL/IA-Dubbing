@@ -2,9 +2,12 @@ import os
 import sys
 import subprocess
 import glob
+import warnings
 from pydub import AudioSegment
 import whisper
 from deep_translator import GoogleTranslator
+
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API.*")
 
 # Local imports
 from config_loader import config
@@ -50,7 +53,8 @@ def separar_vocals_demucs(audio_path):
         
         try:
             # Executa demucs COM SUPORTE A GPU! 🚀
-            cmd = ["demucs", "-n", model_name, "-d", device, "--two-stems=vocals", audio_path]
+            os.makedirs(sep_dir, exist_ok=True)
+            cmd = ["demucs", "-n", model_name, "-d", device, "-o", sep_dir, "--two-stems=vocals", audio_path]
             
             if device == "cuda":
                 logger.info("🎮 Usando GPU para separação de vozes (Demucs)")

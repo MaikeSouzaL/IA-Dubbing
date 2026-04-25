@@ -212,8 +212,8 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 }
 $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
 
-Write-Step "Atualizando pip/setuptools/wheel"
-Invoke-Checked $venvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+Write-Step "Atualizando pip/wheel"
+Invoke-Checked $venvPython @("-m", "pip", "install", "--upgrade", "pip", "wheel")
 
 Write-Step "Instalando dependencias Python do projeto"
 Invoke-Checked $venvPython @("-m", "pip", "install", "-r", "requirements.txt")

@@ -81,20 +81,24 @@ def add_artifact(name: str, path: str) -> None:
     state = load_current_job()
     if not state:
         return
-    state.setdefault("artifacts", {})[name] = os.path.abspath(path)
+    state.setdefault("artifacts", {})[str(name)] = os.path.abspath(os.fspath(path))
     save_job_state(state)
 
 
 def copy_artifact(path: str, name: Optional[str] = None) -> Optional[str]:
     state = load_current_job()
-    if not state or not path or not os.path.exists(path):
+    if not state or not path:
         return None
+    source = Path(path)
+    if not source.exists():
+        return None
+    artifact_name = Path(name).name if name is not None else source.name
     job_dir = Path(state["job_dir"])
-    target = job_dir / (name or os.path.basename(path))
+    target = job_dir / artifact_name
     try:
-        if Path(path).resolve() != target.resolve():
-            shutil.copy2(path, target)
-        add_artifact(name or os.path.basename(path), str(target))
+        if source.resolve() != target.resolve():
+            shutil.copy2(source, target)
+        add_artifact(artifact_name, str(target))
         return str(target)
     except Exception as e:
         logger.warning(f"Nao foi possivel copiar artefato para job: {path} -> {e}")
