@@ -14,7 +14,7 @@ logger = setup_logger(__name__)
 ROOT = str(PROJECT_ROOT)
 ensure_project_dirs()
 
-def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration, min_rate=1.0, max_rate=1.65):
+def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration, min_rate=1.0):
     # Calcula rate ideal
     if target_duration <= 0:
         print("⚠️ Slot de tempo inválido; mantendo áudio original para não cortar fala.")
@@ -22,10 +22,7 @@ def stretch_audio_ffmpeg(input_file, output_file, src_duration, target_duration,
         return
 
     rate = src_duration / max(target_duration, 0.01)
-    if rate > max_rate:
-        print(f"⚠️ Rate {rate:.2f}x alto demais; acelerando só até {max_rate:.2f}x e preservando o final da fala.")
-        rate = max_rate
-    elif rate < min_rate:
+    if rate < min_rate:
         print(f"⚠️ Rate {rate:.2f}x baixo demais, adicionando silêncio ao final.")
         seg = AudioSegment.from_wav(input_file)
         silence = AudioSegment.silent(duration=int((target_duration - src_duration) * 1000))
@@ -146,8 +143,7 @@ def refinar_e_ajustar_frase(frase, i, adiantar_ms=120, folga_ms=0):
     src_duration = len(seg_ref) / 1000.0
     
     # Aplicamos o stretching para encaixar exatamente no tempo disponível
-    max_rate = float(config.get("sync.max_speed_rate", 1.65))
-    stretch_audio_ffmpeg(temp_stretch_file, audio_out, src_duration, target_duration, max_rate=max_rate)
+    stretch_audio_ffmpeg(temp_stretch_file, audio_out, src_duration, target_duration)
     
     os.remove(temp_stretch_file)
     return {
@@ -236,7 +232,7 @@ if frases_refinadas:
             print(f"   Sobreposição: {overlap_start:.1f}s - {overlap_end:.1f}s ({overlap_dur:.1f}s)")
         if len(overlaps_detectados) > 10:
             print(f"   ... e mais {len(overlaps_detectados) - 10} sobreposições")
-        print("💡 Se isso acontecer muito, reduza o tamanho das frases ou aumente sync.max_speed_rate com cuidado.\n")
+        print("💡 Se isso acontecer muito, reduza o tamanho das frases ou ajuste os parametros de sincronizacao.\n")
 else:
     print("❌ ERRO: Nenhuma frase foi refinada! Verifique os logs acima.")
     # Cria áudio vazio do tamanho do vídeo

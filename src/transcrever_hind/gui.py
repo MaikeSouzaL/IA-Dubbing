@@ -52,7 +52,6 @@ class DubbingApp:
         self.offline_mode = ctk.BooleanVar(value=config.get("app.offline_mode", False))
         self.sync_lead_ms = ctk.DoubleVar(value=float(config.get("sync.lead_ms", 60)))
         self.sync_tail_padding_ms = ctk.DoubleVar(value=float(config.get("sync.tail_padding_ms", 40)))
-        self.sync_max_speed_rate = ctk.DoubleVar(value=float(config.get("sync.max_speed_rate", 1.9)))
         self.post_action = ctk.StringVar(value="Nada")
         self.transcription_model_options = {
             "local_whisper": ["tiny", "base", "small", "medium", "large", "large-v3-turbo", "turbo"],
@@ -423,20 +422,6 @@ class DubbingApp:
         self.slider_sync_tail.pack(side="left")
         self.lbl_sync_tail_val = ctk.CTkLabel(sync_frame, text=f"{int(self.sync_tail_padding_ms.get())} ms", width=55, anchor="w")
         self.lbl_sync_tail_val.pack(side="left", padx=(5, 15))
-
-        ctk.CTkLabel(sync_frame, text="Vel. max").pack(side="left", padx=(0, 5))
-        self.slider_sync_speed = ctk.CTkSlider(
-            sync_frame,
-            from_=1.2,
-            to=2.2,
-            number_of_steps=20,
-            variable=self.sync_max_speed_rate,
-            command=lambda value: self.lbl_sync_speed_val.configure(text=f"{float(value):.2f}x"),
-            width=120,
-        )
-        self.slider_sync_speed.pack(side="left")
-        self.lbl_sync_speed_val = ctk.CTkLabel(sync_frame, text=f"{self.sync_max_speed_rate.get():.2f}x", width=55, anchor="w")
-        self.lbl_sync_speed_val.pack(side="left", padx=(5, 0))
         ctk.CTkButton(sync_frame, text="Salvar", width=70, command=self.save_sync_settings_clicked).pack(side="left", padx=(15, 0))
         
         # Juntar Vídeos
@@ -610,18 +595,13 @@ class DubbingApp:
             config._config["sync"]["tail_padding_ms"] = int(float(self.sync_tail_padding_ms.get()))
         except Exception:
             config._config["sync"]["tail_padding_ms"] = 40
-        try:
-            config._config["sync"]["max_speed_rate"] = round(float(self.sync_max_speed_rate.get()), 2)
-        except Exception:
-            config._config["sync"]["max_speed_rate"] = 1.9
 
     def save_sync_settings_clicked(self):
         self.save_sync_settings()
         config.save()
         self.log(
             f"Sincronizacao salva: adiantar {config._config['sync']['lead_ms']}ms, "
-            f"folga {config._config['sync']['tail_padding_ms']}ms, "
-            f"vel. max {config._config['sync']['max_speed_rate']}x",
+            f"folga {config._config['sync']['tail_padding_ms']}ms",
             "SUCCESS",
         )
 
@@ -1256,8 +1236,7 @@ class DubbingApp:
         self.log(f"🌍 Idioma de destino: {self.target_lang.get()}", "INFO")
         self.log(
             f"Sincronizacao: adiantar {config._config['sync']['lead_ms']}ms, "
-            f"folga {config._config['sync']['tail_padding_ms']}ms, "
-            f"vel. max {config._config['sync']['max_speed_rate']}x",
+            f"folga {config._config['sync']['tail_padding_ms']}ms",
             "INFO",
         )
 
