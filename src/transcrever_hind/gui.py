@@ -1156,16 +1156,13 @@ class DubbingApp:
             
         self.root.after(100, self.process_log_queue)
 
-    def start_preview(self):
-        self.start_process(is_preview=True)
-
-    def start_process(self, is_preview=False):
+    def start_process(self):
         if self.is_running:
             return
             
         mode = self.input_mode.get()
         target = ""
-        queue_items = list(self.batch_queue) if not is_preview else []
+        queue_items = list(self.batch_queue)
         if queue_items:
             if self.offline_mode.get() and any(item["mode"] == "url" for item in queue_items):
                 messagebox.showerror("Modo offline", "No modo offline, a fila deve ter apenas arquivos locais.")
@@ -1198,7 +1195,7 @@ class DubbingApp:
 
         # Assegura que as chaves existam mesmo se config.yaml não existir
         provider = self.transcription_provider.get()
-        if provider not in ("local_whisper", "local_faster_whisper") and not is_preview:
+        if provider not in ("local_whisper", "local_faster_whisper"):
             estimate = self.estimate_api_cost_message(target)
             if estimate and not messagebox.askyesno("Estimativa de API", estimate + "\n\nDeseja continuar?"):
                 return
@@ -1272,15 +1269,12 @@ class DubbingApp:
         self.progress_var.set(0.0)
         self.log_textbox.delete(1.0, "end")
         self._console_reset()
-        if is_preview:
-            self.stage_var.set("Iniciando Amostra (15s)...")
-        else:
-            self.stage_var.set("Iniciando...")
+        self.stage_var.set("Iniciando...")
         
         if queue_items:
             thread = threading.Thread(target=self.run_batch_pipeline, args=(queue_items,))
         else:
-            thread = threading.Thread(target=self.run_pipeline, args=(mode, target, is_preview))
+            thread = threading.Thread(target=self.run_pipeline, args=(mode, target))
         thread.daemon = True
         thread.start()
 
@@ -1349,7 +1343,6 @@ class DubbingApp:
 
         self.is_running = True
         self.btn_start.configure(state="disabled")
-        self.btn_preview.configure(state="disabled")
         self.btn_resume.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.progress_bar_widget.set(0)
@@ -1468,7 +1461,6 @@ class DubbingApp:
 
         self.is_running = True
         self.btn_start.configure(state="disabled")
-        self.btn_preview.configure(state="disabled")
         self.btn_resume.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.progress_bar_widget.set(0)
@@ -1616,12 +1608,9 @@ class DubbingApp:
             self.log("A fila terminou. Colocando o Windows em hibernacao.", "WARNING")
             subprocess.Popen(["shutdown", "/h"])
 
-    def run_pipeline(self, mode, target, is_preview=False):
+    def run_pipeline(self, mode, target):
         try:
-            if is_preview:
-                self.log("🧪 Iniciando pipeline em MODO AMOSTRA (15 segundos)...", "SUCCESS")
-            else:
-                self.log("🚀 Iniciando pipeline de dublagem completo...", "SUCCESS")
+            self.log("🚀 Iniciando pipeline de dublagem completo...", "SUCCESS")
             
             input_str = f"1\n{target}\n" if mode == "url" else f"2\n{target}\n"
             
@@ -1634,8 +1623,6 @@ class DubbingApp:
             # Permite que o Coqui TTS mostre o prompt de termos via stdin pipe (GUI).
             # Sem isso, o XTTS pode ser bloqueado em modo não-TTY.
             env["COQUI_TOS_ALLOW_PROMPT"] = "1"
-            if is_preview:
-                env["TRANSCRIBER_PREVIEW"] = "1"
 
             process = subprocess.Popen(
                 cmd,
@@ -1672,8 +1659,7 @@ class DubbingApp:
             if process.returncode == 0 and self.is_running:
                 self.log("✅ Processo concluído com sucesso!", "SUCCESS")
                 messagebox.showinfo("Sucesso", "Dublagem concluída! Verifique a pasta do projeto.")
-                if not is_preview:
-                    self.execute_post_action()
+                self.execute_post_action()
             elif not self.is_running:
                 self.log("⚠️ Processo interrompido pelo usuário.", "WARNING")
             else:
@@ -1694,7 +1680,6 @@ class DubbingApp:
 
     def _reset_buttons(self):
         self.btn_start.configure(state="normal")
-        self.btn_preview.configure(state="normal")
         self.btn_resume.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.status_var.set("Pronto")
