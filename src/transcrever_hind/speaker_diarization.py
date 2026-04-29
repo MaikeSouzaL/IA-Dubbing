@@ -25,6 +25,9 @@ def perform_speaker_diarization(audio_path, num_speakers=None):
     try:
         from pyannote.audio import Pipeline
     except ImportError:
+        if config.get("app.offline_mode", False):
+            logger.warning("pyannote.audio nao instalado e modo offline ativo. Diarizacao indisponivel.")
+            return None
         logger.warning("pyannote.audio não instalado. Instalando...")
         import subprocess
         subprocess.run([sys.executable, "-m", "pip", "install", "pyannote.audio"], check=False)
@@ -35,9 +38,14 @@ def perform_speaker_diarization(audio_path, num_speakers=None):
     # Carrega o pipeline de diarização
     # Nota: Requer HuggingFace token para modelos privados
     try:
+        hf_token = (
+            config.get("models.pyannote.hf_token", None)
+            or os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+        )
         pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=config.get("models.pyannote.hf_token", None)
+            use_auth_token=hf_token
         )
     except Exception as e:
         logger.error(f"Erro ao carregar pipeline de diarização: {e}")

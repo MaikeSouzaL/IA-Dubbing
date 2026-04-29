@@ -45,10 +45,15 @@ class DubbingApp:
         self.stage_var = ctk.StringVar(value="Aguardando início...")
         self.is_running = False
         self.process = None
+        self.batch_queue = []
         
         # Novas variáveis para funcionalidades
         self.keep_cut_videos = ctk.BooleanVar(value=config.get("app.keep_cut_videos", False))
         self.offline_mode = ctk.BooleanVar(value=config.get("app.offline_mode", False))
+        self.sync_lead_ms = ctk.DoubleVar(value=float(config.get("sync.lead_ms", 60)))
+        self.sync_tail_padding_ms = ctk.DoubleVar(value=float(config.get("sync.tail_padding_ms", 40)))
+        self.sync_max_speed_rate = ctk.DoubleVar(value=float(config.get("sync.max_speed_rate", 1.9)))
+        self.post_action = ctk.StringVar(value="Nada")
         self.transcription_model_options = {
             "local_whisper": ["tiny", "base", "small", "medium", "large", "large-v3-turbo", "turbo"],
             "local_faster_whisper": ["tiny", "base", "small", "medium", "large-v2", "large-v3", "large-v3-turbo", "turbo"],
@@ -183,6 +188,29 @@ class DubbingApp:
         self.entry_url.pack(side="left", fill="x", expand=True)
 
         self.toggle_input_mode()
+
+        queue_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
+        queue_frame.pack(fill="x", padx=15, pady=(8, 4))
+
+        queue_buttons = ctk.CTkFrame(queue_frame, fg_color="transparent")
+        queue_buttons.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(queue_buttons, text="Fila de dublagem:").pack(side="left", padx=(0, 10))
+        ctk.CTkButton(queue_buttons, text="+ Link atual", width=105, command=self.add_current_input_to_queue).pack(side="left", padx=4)
+        ctk.CTkButton(queue_buttons, text="+ Arquivos", width=100, command=self.add_files_to_queue).pack(side="left", padx=4)
+        ctk.CTkButton(queue_buttons, text="Remover", width=90, command=self.remove_selected_queue_item).pack(side="left", padx=4)
+        ctk.CTkButton(queue_buttons, text="Limpar", width=80, command=self.clear_queue).pack(side="left", padx=4)
+
+        ctk.CTkLabel(queue_buttons, text="Ao terminar:").pack(side="left", padx=(22, 6))
+        self.combo_post_action = ctk.CTkComboBox(
+            queue_buttons,
+            variable=self.post_action,
+            values=["Nada", "Desligar", "Hibernar"],
+            width=120,
+        )
+        self.combo_post_action.pack(side="left")
+
+        self.queue_listbox = tk.Listbox(queue_frame, height=4, activestyle="dotbox")
+        self.queue_listbox.pack(fill="x", expand=True)
         
         # Configurações Rápidas
         config_frame = ctk.CTkFrame(self.main_frame)
@@ -362,6 +390,54 @@ class DubbingApp:
         self.lbl_bg_volume_val.pack(side="left")
         
         self.toggle_multi_voice()
+
+        sync_frame = ctk.CTkFrame(grid_frame, fg_color="transparent")
+        sync_frame.grid(row=7, column=0, columnspan=5, sticky="we", pady=(5, 10))
+
+        ctk.CTkLabel(sync_frame, text="Sincronizacao da fala:", font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=(0, 15))
+
+        ctk.CTkLabel(sync_frame, text="Adiantar").pack(side="left", padx=(0, 5))
+        self.slider_sync_lead = ctk.CTkSlider(
+            sync_frame,
+            from_=0,
+            to=200,
+            number_of_steps=20,
+            variable=self.sync_lead_ms,
+            command=lambda value: self.lbl_sync_lead_val.configure(text=f"{int(float(value))} ms"),
+            width=110,
+        )
+        self.slider_sync_lead.pack(side="left")
+        self.lbl_sync_lead_val = ctk.CTkLabel(sync_frame, text=f"{int(self.sync_lead_ms.get())} ms", width=55, anchor="w")
+        self.lbl_sync_lead_val.pack(side="left", padx=(5, 15))
+
+        ctk.CTkLabel(sync_frame, text="Folga final").pack(side="left", padx=(0, 5))
+        self.slider_sync_tail = ctk.CTkSlider(
+            sync_frame,
+            from_=0,
+            to=250,
+            number_of_steps=25,
+            variable=self.sync_tail_padding_ms,
+            command=lambda value: self.lbl_sync_tail_val.configure(text=f"{int(float(value))} ms"),
+            width=110,
+        )
+        self.slider_sync_tail.pack(side="left")
+        self.lbl_sync_tail_val = ctk.CTkLabel(sync_frame, text=f"{int(self.sync_tail_padding_ms.get())} ms", width=55, anchor="w")
+        self.lbl_sync_tail_val.pack(side="left", padx=(5, 15))
+
+        ctk.CTkLabel(sync_frame, text="Vel. max").pack(side="left", padx=(0, 5))
+        self.slider_sync_speed = ctk.CTkSlider(
+            sync_frame,
+            from_=1.2,
+            to=2.2,
+            number_of_steps=20,
+            variable=self.sync_max_speed_rate,
+            command=lambda value: self.lbl_sync_speed_val.configure(text=f"{float(value):.2f}x"),
+            width=120,
+        )
+        self.slider_sync_speed.pack(side="left")
+        self.lbl_sync_speed_val = ctk.CTkLabel(sync_frame, text=f"{self.sync_max_speed_rate.get():.2f}x", width=55, anchor="w")
+        self.lbl_sync_speed_val.pack(side="left", padx=(5, 0))
+        ctk.CTkButton(sync_frame, text="Salvar", width=70, command=self.save_sync_settings_clicked).pack(side="left", padx=(15, 0))
         
         # Juntar Vídeos
         merge_frame = ctk.CTkFrame(self.main_frame)
@@ -422,9 +498,6 @@ class DubbingApp:
         btn_frame = ctk.CTkFrame(footer_frame, fg_color="transparent")
         btn_frame.pack(side="right")
         
-        self.btn_preview = ctk.CTkButton(btn_frame, text="🧪 Gerar Amostra (15s)", font=ctk.CTkFont(size=14, weight="bold"), fg_color="#f0ad4e", hover_color="#ec971f", height=40, command=self.start_preview)
-        self.btn_preview.pack(side="left", padx=5)
-
         self.btn_start = ctk.CTkButton(btn_frame, text="▶️ Iniciar Dublagem", font=ctk.CTkFont(size=14, weight="bold"), height=40, command=self.start_process)
         self.btn_start.pack(side="left", padx=5)
 
@@ -525,6 +598,32 @@ class DubbingApp:
         provider = self.transcription_provider.get()
         model = self.transcription_model.get()
         self.log(f"Configuracao de transcricao salva: {provider} / {model}", "SUCCESS")
+
+    def save_sync_settings(self):
+        if "sync" not in config._config:
+            config._config["sync"] = {}
+        try:
+            config._config["sync"]["lead_ms"] = int(float(self.sync_lead_ms.get()))
+        except Exception:
+            config._config["sync"]["lead_ms"] = 60
+        try:
+            config._config["sync"]["tail_padding_ms"] = int(float(self.sync_tail_padding_ms.get()))
+        except Exception:
+            config._config["sync"]["tail_padding_ms"] = 40
+        try:
+            config._config["sync"]["max_speed_rate"] = round(float(self.sync_max_speed_rate.get()), 2)
+        except Exception:
+            config._config["sync"]["max_speed_rate"] = 1.9
+
+    def save_sync_settings_clicked(self):
+        self.save_sync_settings()
+        config.save()
+        self.log(
+            f"Sincronizacao salva: adiantar {config._config['sync']['lead_ms']}ms, "
+            f"folga {config._config['sync']['tail_padding_ms']}ms, "
+            f"vel. max {config._config['sync']['max_speed_rate']}x",
+            "SUCCESS",
+        )
 
     def on_offline_mode_changed(self):
         if "app" not in config._config:
@@ -688,6 +787,11 @@ class DubbingApp:
         os.startfile(path)
 
     def check_dependencies(self):
+        try:
+            import pyannote.audio  # noqa: F401
+            pyannote_ok = True
+        except Exception:
+            pyannote_ok = False
         checks = {
             "ffmpeg": shutil.which("ffmpeg") is not None,
             "ffprobe": shutil.which("ffprobe") is not None,
@@ -695,10 +799,13 @@ class DubbingApp:
             "yt-dlp": shutil.which("yt-dlp") is not None,
             "node": shutil.which("node") is not None,
             "deno": shutil.which("deno") is not None,
+            "pyannote.audio": pyannote_ok,
         }
         missing = [name for name, ok in checks.items() if not ok]
         for name, ok in checks.items():
             self.log(f"Dependencia {name}: {'OK' if ok else 'faltando'}", "SUCCESS" if ok else "WARNING")
+        if not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or config.get("models.pyannote.hf_token", None)):
+            self.log("Token HuggingFace para diarizacao: nao configurado (necessario para multi-voz com pyannote).", "WARNING")
         
         if missing:
             if "deno" in missing:
@@ -831,6 +938,48 @@ class DubbingApp:
         )
         if filename:
             self.video_path.set(filename)
+
+    def _refresh_queue_listbox(self):
+        self.queue_listbox.delete(0, "end")
+        for index, item in enumerate(self.batch_queue, 1):
+            label = "YouTube" if item["mode"] == "url" else "Arquivo"
+            self.queue_listbox.insert("end", f"{index:02d}. [{label}] {item['target']}")
+
+    def add_current_input_to_queue(self):
+        mode = self.input_mode.get()
+        target = self.youtube_url.get().strip() if mode == "url" else self.video_path.get().strip()
+        if not target:
+            messagebox.showwarning("Fila", "Informe um link ou arquivo antes de adicionar.")
+            return
+        if mode == "file" and not os.path.exists(target):
+            messagebox.showwarning("Fila", "Arquivo nao encontrado.")
+            return
+        self.batch_queue.append({"mode": mode, "target": target})
+        self._refresh_queue_listbox()
+        self.log(f"Adicionado a fila: {target}", "SUCCESS")
+
+    def add_files_to_queue(self):
+        files = filedialog.askopenfilenames(
+            title="Adicionar videos a fila",
+            filetypes=[("Arquivos de Video", "*.mp4 *.avi *.mkv *.mov *.webm"), ("Todos os Arquivos", "*.*")]
+        )
+        for filename in files:
+            self.batch_queue.append({"mode": "file", "target": filename})
+        if files:
+            self._refresh_queue_listbox()
+            self.log(f"{len(files)} arquivo(s) adicionados a fila.", "SUCCESS")
+
+    def remove_selected_queue_item(self):
+        selection = self.queue_listbox.curselection()
+        if not selection:
+            return
+        for index in reversed(selection):
+            del self.batch_queue[index]
+        self._refresh_queue_listbox()
+
+    def clear_queue(self):
+        self.batch_queue.clear()
+        self._refresh_queue_listbox()
 
     def log(self, message, level="INFO"):
         self.log_queue.put((message, level))
@@ -1016,6 +1165,23 @@ class DubbingApp:
             
         mode = self.input_mode.get()
         target = ""
+        queue_items = list(self.batch_queue) if not is_preview else []
+        if queue_items:
+            if self.offline_mode.get() and any(item["mode"] == "url" for item in queue_items):
+                messagebox.showerror("Modo offline", "No modo offline, a fila deve ter apenas arquivos locais.")
+                return
+            missing = [item["target"] for item in queue_items if item["mode"] == "file" and not os.path.exists(item["target"])]
+            if missing:
+                messagebox.showerror("Arquivo nao encontrado", "Alguns arquivos da fila nao existem:\n\n" + "\n".join(missing[:5]))
+                return
+            mode = queue_items[0]["mode"]
+            target = queue_items[0]["target"]
+            self.input_mode.set(mode)
+            if mode == "file":
+                self.video_path.set(target)
+            else:
+                self.youtube_url.set(target)
+            self.toggle_input_mode()
         if self.offline_mode.get() and mode == "url":
             messagebox.showerror("Modo offline", "No modo offline, use um arquivo local. URLs do YouTube precisam de internet.")
             return
@@ -1084,20 +1250,26 @@ class DubbingApp:
             config._config["audio"]["bg_volume"] = float(self.bg_volume.get())
         except:
             config._config["audio"]["bg_volume"] = -6.0
+
+        self.save_sync_settings()
         
         config.save()
         self.log(f"Modelo de transcricao: {self.transcription_model.get()}", "INFO")
         self.log(f"Motor de transcricao: {self.transcription_provider.get()}", "INFO")
         self.log(f"🌍 Idioma de destino: {self.target_lang.get()}", "INFO")
+        self.log(
+            f"Sincronizacao: adiantar {config._config['sync']['lead_ms']}ms, "
+            f"folga {config._config['sync']['tail_padding_ms']}ms, "
+            f"vel. max {config._config['sync']['max_speed_rate']}x",
+            "INFO",
+        )
 
         self.is_running = True
         self.btn_start.configure(state="disabled")
-        self.btn_preview.configure(state="disabled")
+        self.btn_resume.configure(state="disabled")
         self.btn_stop.configure(state="normal")
-        
         self.progress_bar_widget.set(0)
         self.progress_var.set(0.0)
-        
         self.log_textbox.delete(1.0, "end")
         self._console_reset()
         if is_preview:
@@ -1105,7 +1277,10 @@ class DubbingApp:
         else:
             self.stage_var.set("Iniciando...")
         
-        thread = threading.Thread(target=self.run_pipeline, args=(mode, target, is_preview))
+        if queue_items:
+            thread = threading.Thread(target=self.run_batch_pipeline, args=(queue_items,))
+        else:
+            thread = threading.Thread(target=self.run_pipeline, args=(mode, target, is_preview))
         thread.daemon = True
         thread.start()
 
@@ -1128,6 +1303,8 @@ class DubbingApp:
         """Continua a dublagem de onde parou (pula transcrição/tradução, só TTS + sync)."""
         if self.is_running:
             return
+        self.save_sync_settings()
+        config.save()
 
         # Verifica pré-requisitos
         frases_path = pipeline_file("frases_pt.json")
@@ -1245,6 +1422,8 @@ class DubbingApp:
         """Continua automaticamente da etapa mais segura encontrada."""
         if self.is_running:
             return
+        self.save_sync_settings()
+        config.save()
 
         try:
             from job_manager import infer_resume_step
@@ -1360,6 +1539,83 @@ class DubbingApp:
             self._running_process = None
             self.cleanup_ui()
 
+    def run_batch_pipeline(self, queue_items):
+        try:
+            total = len(queue_items)
+            self.log(f"Iniciando fila com {total} video(s).", "SUCCESS")
+            env_base = os.environ.copy()
+            env_base["PYTHONIOENCODING"] = "utf-8"
+            env_base["COQUI_TOS_ALLOW_PROMPT"] = "1"
+
+            for index, item in enumerate(queue_items, 1):
+                if not self.is_running:
+                    self.log("Fila interrompida pelo usuario.", "WARNING")
+                    return
+
+                mode = item["mode"]
+                target = item["target"]
+                self.stage_var.set(f"Fila {index}/{total}: iniciando...")
+                self.progress_var.set(0.0)
+                self.log("=" * 60, "INFO")
+                self.log(f"Fila {index}/{total}: dublando {target}", "SUCCESS")
+
+                input_str = f"1\n{target}\n" if mode == "url" else f"2\n{target}\n"
+                process = subprocess.Popen(
+                    [sys.executable, str(Path("scripts") / "transcrever.py")],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    env=env_base.copy(),
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                self._running_process = process
+                process.stdin.write(input_str)
+                process.stdin.flush()
+
+                for line in process.stdout:
+                    if not self.is_running:
+                        process.terminate()
+                        break
+                    line = line.strip()
+                    if line:
+                        self.log(line)
+
+                process.wait()
+                self._running_process = None
+
+                if not self.is_running:
+                    self.log("Fila interrompida pelo usuario.", "WARNING")
+                    return
+                if process.returncode != 0:
+                    self.log(f"Fila parada: item {index}/{total} falhou (codigo {process.returncode}).", "ERROR")
+                    return
+
+                self.log(f"Item {index}/{total} concluido.", "SUCCESS")
+
+            self.log("Fila de dublagem concluida com sucesso!", "SUCCESS")
+            self.root.after(0, lambda: messagebox.showinfo("Sucesso", "Todas as dublagens da fila foram concluidas."))
+            self.execute_post_action()
+        except Exception as e:
+            self.log(f"Erro critico na fila: {str(e)}", "ERROR")
+            import traceback
+            self.log(traceback.format_exc(), "ERROR")
+        finally:
+            self._running_process = None
+            self.cleanup_ui()
+
+    def execute_post_action(self):
+        action = self.post_action.get()
+        if action == "Desligar":
+            self.log("A fila terminou. O Windows sera desligado em 60 segundos.", "WARNING")
+            subprocess.Popen(["shutdown", "/s", "/t", "60", "/c", "Dublagem concluida. Desligando em 60 segundos."])
+        elif action == "Hibernar":
+            self.log("A fila terminou. Colocando o Windows em hibernacao.", "WARNING")
+            subprocess.Popen(["shutdown", "/h"])
+
     def run_pipeline(self, mode, target, is_preview=False):
         try:
             if is_preview:
@@ -1416,6 +1672,8 @@ class DubbingApp:
             if process.returncode == 0 and self.is_running:
                 self.log("✅ Processo concluído com sucesso!", "SUCCESS")
                 messagebox.showinfo("Sucesso", "Dublagem concluída! Verifique a pasta do projeto.")
+                if not is_preview:
+                    self.execute_post_action()
             elif not self.is_running:
                 self.log("⚠️ Processo interrompido pelo usuário.", "WARNING")
             else:

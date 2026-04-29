@@ -13,7 +13,7 @@ models:
     device: auto
     use_fp16: false
   faster_whisper:
-    size: large-v3-turbo
+    size: turbo
     device: auto
     compute_type: int8_float16
     beam_size: 5
@@ -86,7 +86,7 @@ transcription:
     - phone_call
     - default
   faster_whisper:
-    model: large-v3-turbo
+    model: turbo
     available_models:
     - tiny
     - base
@@ -107,6 +107,10 @@ audio:
   segmentation:
     max_phrase_duration: 10.0
   bg_volume: 10.0
+sync:
+  lead_ms: 60
+  tail_padding_ms: 40
+  max_speed_rate: 1.9
 app:
   offline_mode: false
   generate_subtitles: false
@@ -115,5 +119,6 @@ app:
   clean_after_completion: true
   keep_cut_videos: false
   use_multi_voice: false
+  auto_extract_speaker_voices: true
   expected_speakers: 2
   max_video_duration_minutes: 30.0

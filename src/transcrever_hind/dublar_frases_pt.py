@@ -143,6 +143,46 @@ def criar_referencia_voz_limpa(vocals_path):
         logger.warning(f"Nao foi possivel criar referencia de voz limpa: {e}")
         return vocals_path
 
+def criar_referencias_por_falante(vocals_path, diarization_segments):
+    """Cria automaticamente uma amostra de voz por falante para XTTS."""
+    if not config.get("app.auto_extract_speaker_voices", True):
+        return
+    if not os.path.isfile(vocals_path) or not diarization_segments:
+        return
+    try:
+        audio = AudioSegment.from_file(vocals_path)
+        refs_dir = work_file("voice_references")
+        ensure_dir(refs_dir)
+        target_ms = int(float(config.get("models.tts.voice_reference_seconds", 18)) * 1000)
+        threshold = float(config.get("models.tts.voice_reference_threshold_db", -35))
+        by_speaker = {}
+        for speaker in sorted({seg.get("speaker", "SPEAKER_00") for seg in diarization_segments}):
+            voice_manager.remove_voice(speaker)
+        for seg in sorted(diarization_segments, key=lambda s: (s.get("speaker", ""), s.get("start", 0))):
+            speaker = seg.get("speaker", "SPEAKER_00")
+            start_ms = max(0, int(float(seg.get("start", 0.0)) * 1000))
+            end_ms = min(len(audio), int(float(seg.get("end", 0.0)) * 1000))
+            if end_ms <= start_ms:
+                continue
+            piece = audio[start_ms:end_ms]
+            if piece.dBFS == float("-inf") or piece.dBFS < threshold:
+                continue
+            current = by_speaker.get(speaker, AudioSegment.silent(duration=0))
+            if len(current) < target_ms:
+                by_speaker[speaker] = current + piece + AudioSegment.silent(duration=120)
+
+        for speaker, sample in by_speaker.items():
+            if len(sample) < 2500:
+                logger.warning(f"⚠️ Amostra muito curta para {speaker}; usando voz padrao se necessario.")
+                continue
+            out_path = os.path.join(str(refs_dir), f"voice_{speaker}.wav")
+            sample[:target_ms].fade_in(20).fade_out(60).export(out_path, format="wav")
+            voice_manager.add_voice(speaker, out_path, name=f"Voz {speaker[-2:]}")
+        if by_speaker:
+            logger.info(f"✅ Referencias automaticas de falantes preparadas: {', '.join(sorted(by_speaker.keys()))}")
+    except Exception as e:
+        logger.warning(f"Nao foi possivel criar referencias por falante: {e}")
+
 def alinhar_frases_palavras(frases, words):
     if not frases or not words:
         return []
@@ -516,7 +556,8 @@ if __name__ == "__main__":
             logger.warning("⚠️ Sem vocals.wav: dublagem sem clonagem.")
     else:
         logger.info(f"🎤 Usando referência: {vocals}")
-    vocals = criar_referencia_voz_limpa(vocals)
+    vocals_original = vocals
+    vocals_default_ref = criar_referencia_voz_limpa(vocals_original)
     
     # Verifica se deve usar multi-voice
     use_multi_voice = config.get("app.use_multi_voice", False)
@@ -527,16 +568,17 @@ if __name__ == "__main__":
         from speaker_diarization import perform_speaker_diarization, assign_speakers_to_phrases
         
         num_speakers = config.get("app.expected_speakers", None)
-        diarization = perform_speaker_diarization(vocals, num_speakers)
+        diarization = perform_speaker_diarization(vocals_original, num_speakers)
         
         if diarization:
             assign_speakers_to_phrases(frases_pt, diarization)
+            criar_referencias_por_falante(vocals_original, diarization)
             logger.info("✅ Diarização e atribuição concluídas")
         else:
             logger.warning("⚠️ Diarização falhou, usando modo single-voice")
             use_multi_voice = False
         
-    dublar_frases(frases_pt, vocals, saida_audios, use_multi_voice=use_multi_voice)
+    dublar_frases(frases_pt, vocals_default_ref, saida_audios, use_multi_voice=use_multi_voice)
     
     logger.info("🔄 Sincronizando e juntando...")
     mark_step("sync", "running")
